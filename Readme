@@ -1,4 +1,7 @@
-quiz-bot/
+# Quiz Telegram Bot
+
+Bot de quiz simples (sem IA). Edite `quizzes.json` para adicionar perguntas. Deploy com Render usando a variável de ambiente TELEGRAM_TOKEN.
+
 │
 ├── main.py               # Código do bot
 ├── quizzes.json          # Banco de dados de perguntas
