@@ -104,7 +104,7 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ranking_semanal():
     while True:
         agora = datetime.now()
-        # verifica se é segunda-feira 00:00
+        # toda segunda-feira 00:00
         if agora.weekday() == 0 and agora.hour == 0 and agora.minute < 1:
             usuarios = carregar_usuarios()
             ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana",0), reverse=True)
@@ -115,6 +115,9 @@ async def ranking_semanal():
                 data["pontos"] += bonus[i]
                 mensagem += f"{i+1}º {data['nome']}: +{bonus[i]} pontos!\n"
                 data["pontos_semana"] = 0  # reset semanal
+                # notificação individual
+                await bot.send_message(chat_id=user_id, text=f"🏆 Parabéns! Você ficou em {i+1}º lugar da semana e recebeu +{bonus[i]} pontos!")
+
             # resetar pontos_semana dos demais
             for user_id, data in ranking[3:]:
                 data["pontos_semana"] = 0
@@ -122,8 +125,7 @@ async def ranking_semanal():
             salvar_usuarios(usuarios)
             await bot.send_message(chat_id=CHAT_ID, text=mensagem)
             print("🏆 Bônus semanal aplicado!")
-            # dormir 61 segundos para não executar novamente no mesmo minuto
-            await asyncio.sleep(61)
+            await asyncio.sleep(61)  # evitar múltiplas execuções no mesmo minuto
         else:
             await asyncio.sleep(30)
 
@@ -164,13 +166,15 @@ async def loop_quizzes(app):
             await asyncio.sleep(segundos_ate_inicio)
 
 # Inicialização
-async def main():
+if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(PollAnswerHandler(receber_resposta))
+
+    # Criar tarefas assíncronas
     asyncio.create_task(loop_quizzes(app))
     asyncio.create_task(ranking_semanal())
-    print("🤖 Bot rodando automaticamente com shuffle diário e ranking semanal!")
-    await app.run_polling()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    print("🤖 Bot rodando com shuffle diário e ranking semanal!")
+
+    # Rodar a aplicação diretamente (não usar asyncio.run)
+    app.run_polling()
