@@ -99,19 +99,36 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
     )
 
-# Loop automático
+# Loop automático com shuffle diário
 async def loop_quizzes(app):
     quizzes = carregar_quizzes()
+    ultimo_dia = None
+    perguntas_ordenadas = []
+
     while True:
+        agora = datetime.now()
+        dia_atual = agora.date()
+
+        # Shuffle diário
+        if dia_atual != ultimo_dia:
+            perguntas_ordenadas = quizzes.copy()
+            random.shuffle(perguntas_ordenadas)
+            ultimo_dia = dia_atual
+            print("🔀 Perguntas embaralhadas para o dia!")
+
         if hora_valida():
-            q = random.choice(quizzes)
+            if not perguntas_ordenadas:
+                # reembaralha se acabou a lista
+                perguntas_ordenadas = quizzes.copy()
+                random.shuffle(perguntas_ordenadas)
+
+            q = perguntas_ordenadas.pop(0)
             q = embaralhar_opcoes(q)
             print(f"⏰ Enviando quiz: {q['pergunta']}")
             quizzes_enviadas = await enviar_quiz(q)
             app.bot_data.update(quizzes_enviadas)
             await asyncio.sleep(INTERVALO_MINUTOS * 60)
         else:
-            agora = datetime.now()
             proximo_inicio = datetime.combine(agora.date(), INICIO)
             if agora.time() > FIM:
                 proximo_inicio += timedelta(days=1)
@@ -124,7 +141,7 @@ async def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(PollAnswerHandler(receber_resposta))
     asyncio.create_task(loop_quizzes(app))
-    print("🤖 Bot rodando automaticamente...")
+    print("🤖 Bot rodando automaticamente com shuffle diário...")
     await app.run_polling()
 
 if __name__ == "__main__":
