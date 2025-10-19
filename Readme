@@ -1,11 +1,8 @@
 Bot de quiz simples (sem IA). Edite `quizzes.json` para adicionar perguntas.
 Deploy com Render.
 
-/
 │
-├── main.py               ← roda o bot do Telegram (background worker)
-├── web_admin.py          ← servidor web para gerenciar quizzes
-├── quizzes.json          ← banco de dados de perguntas
-├── usuarios.json         ← pontuações
-├── requirements.txt
-├── render.yaml
+├─ main.py                # Código principal do bot
+├─ quizzes.json           # Arquivo com todos os quizzes
+├─ usuarios.json          # Armazenamento de usuários e pontos
+├─ requirements.txt       # Dependências do Python
