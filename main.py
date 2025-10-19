@@ -3,12 +3,11 @@ import json
 import random
 import asyncio
 from datetime import datetime, time, timedelta
-from telegram import Poll
-from telegram.ext import ApplicationBuilder, CommandHandler, PollAnswerHandler, ContextTypes, Update
+from telegram import Update, Poll
+from telegram.ext import ApplicationBuilder, CommandHandler, PollAnswerHandler, ContextTypes
 
 # ================= CONFIGURAÇÃO =================
 TOKEN = os.getenv("TELEGRAM_TOKEN")      # Token do bot
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # ID do grupo
 QUIZZES_FILE = "quizzes.json"
 USUARIOS_FILE = "usuarios.json"
 INTERVALO_MINUTOS = 45
@@ -62,56 +61,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Novos quizzes serão enviados automaticamente!"
     )
 
-async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    resposta = update.poll_answer
-    user_id = str(resposta.user.id)
-    poll_id = resposta.poll_id
-    usuarios = carregar_json(USUARIOS_FILE)
-    quizzes_enviadas = context.bot_data
-
-    if poll_id not in quizzes_enviadas:
-        return
-
-    q = quizzes_enviadas[poll_id]
-    correta = q["correta"]
-
-    if user_id not in usuarios:
-        usuarios[user_id] = {"pontos": 50, "nivel": 1, "pontos_semana": 0}
-
-    acertou = resposta.option_ids and resposta.option_ids[0] == correta
-    if acertou:
-        usuarios[user_id]["pontos"] += 35
-        usuarios[user_id]["pontos_semana"] += 35
-        resultado = "✅ Acertou!"
-    else:
-        resultado = f"❌ Errou! Resposta correta: {q['opcoes'][correta]}"
-
-    usuarios[user_id]["nivel"] = calcular_nivel(usuarios[user_id]["pontos"])
-    salvar_json(USUARIOS_FILE, usuarios)
-
-    await context.bot.send_message(
-        chat_id=resposta.user.id,
-        text=f"{resultado}\n⭐ Pontos: {usuarios[user_id]['pontos']}\n🏅 Nível: {usuarios[user_id]['nivel']}"
-    )
-
 # ================= LOOP DE QUIZZES =================
 async def enviar_quiz(app):
     quizzes = carregar_json(QUIZZES_FILE)
-    if not quizzes:
-        print("⚠️ Nenhum quiz encontrado.")
+    usuarios = carregar_json(USUARIOS_FILE)
+    if not quizzes or not usuarios:
+        print("⚠️ Nenhum quiz ou usuário encontrado.")
         return
 
     q = random.choice(list(quizzes.values()))
     q = embaralhar_pergunta(q)
-    message = await app.bot.send_poll(
-        chat_id=CHAT_ID,
-        question=q["pergunta"],
-        options=q["opcoes"],
-        type=Poll.QUIZ,
-        correct_option_id=q["correta"],
-        is_anonymous=False
-    )
-    app.bot_data[message.poll.id] = q
+
+    # envia o quiz para todos os usuários que já deram /start
+    for user_id in usuarios.keys():
+        try:
+            message = await app.bot.send_poll(
+                chat_id=int(user_id),
+                question=q["pergunta"],
+                options=q["opcoes"],
+                type=Poll.QUIZ,
+                correct_option_id=q["correta"],
+                is_anonymous=False
+            )
+            app.bot_data[message.poll.id] = q
+        except Exception as e:
+            print(f"Erro ao enviar quiz para {user_id}: {e}")
     print(f"⏰ Quiz enviado: {q['pergunta']}")
 
 async def loop_quizzes(app):
@@ -144,6 +118,31 @@ async def ranking_semanal(app):
             salvar_json(USUARIOS_FILE, usuarios)
             print("🏆 Ranking semanal atualizado com bônus!")
         await asyncio.sleep(60)
+
+# ================= RESPOSTAS =================
+async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    resposta = update.poll_answer
+    user_id = str(resposta.user.id)
+    poll_id = resposta.poll_id
+    usuarios = carregar_json(USUARIOS_FILE)
+    quizzes_enviadas = context.bot_data
+
+    if poll_id not in quizzes_enviadas:
+        return
+
+    q = quizzes_enviadas[poll_id]
+    correta = q["correta"]
+
+    if user_id not in usuarios:
+        usuarios[user_id] = {"pontos": 50, "nivel": 1, "pontos_semana": 0}
+
+    acertou = resposta.option_ids and resposta.option_ids[0] == correta
+    if acertou:
+        usuarios[user_id]["pontos"] += 35
+        usuarios[user_id]["pontos_semana"] += 35
+
+    usuarios[user_id]["nivel"] = calcular_nivel(usuarios[user_id]["pontos"])
+    salvar_json(USUARIOS_FILE, usuarios)
 
 # ================= INICIALIZAÇÃO =================
 async def main():
