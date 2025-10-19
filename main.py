@@ -1,15 +1,23 @@
 import os
 import json
 import random
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, PollAnswerHandler
+import asyncio
+from datetime import datetime, time, timedelta
+from telegram import Bot, Update
+from telegram.ext import ApplicationBuilder, PollAnswerHandler, ContextTypes
 
-# === CONFIGURAÇÕES ===
+# CONFIGURAÇÕES
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 QUIZ_FILE = "quizzes.json"
 USERS_FILE = "usuarios.json"
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # grupo/canal
+INTERVALO_MINUTOS = 45
+INICIO = time(7, 0)   # 07:00
+FIM = time(23, 0)     # 23:00
 
-# === FUNÇÕES AUXILIARES ===
+bot = Bot(token=TOKEN)
+
+# === Funções auxiliares ===
 def carregar_quizzes():
     with open(QUIZ_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -31,89 +39,93 @@ def calcular_nivel(pontos):
     else:
         return (pontos - 50) // 50 + 2
 
-# === COMANDOS ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    usuarios = carregar_usuarios()
+def hora_valida():
+    agora = datetime.now().time()
+    return INICIO <= agora <= FIM
 
-    if str(user.id) not in usuarios:
-        usuarios[str(user.id)] = {"nome": user.first_name, "pontos": 50}
-        salvar_usuarios(usuarios)
+# Embaralhar opções mantendo correta
+def embaralhar_opcoes(pergunta):
+    opcoes = pergunta["opcoes"].copy()
+    correta = pergunta["correta"]
+    combinacoes = list(enumerate(opcoes))
+    random.shuffle(combinacoes)
+    novas_opcoes = [o for i, o in combinacoes]
+    nova_correta = [i for i, (orig_i, _) in enumerate(combinacoes) if orig_i == correta][0]
+    pergunta["opcoes"] = novas_opcoes
+    pergunta["correta"] = nova_correta
+    return pergunta
 
-    await update.message.reply_text(
-        f"🎮 Olá {user.first_name}! Bem-vindo ao QuizBot!\n\n"
-        "Use /quiz para começar e /ranking para ver os melhores jogadores!"
-    )
-
-async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    quizzes = carregar_quizzes()
-    q = random.choice(quizzes)
-
-    # Envia o quiz oficial do Telegram
-    msg = await update.message.reply_poll(
+# Enviar quiz
+async def enviar_quiz(q):
+    msg = await bot.send_poll(
+        chat_id=CHAT_ID,
         question=q["pergunta"],
         options=q["opcoes"],
         type="quiz",
         correct_option_id=q["correta"],
-        is_anonymous=False,
+        is_anonymous=False
     )
+    return {msg.poll.id: q}
 
-    # Salva qual pergunta foi enviada e qual é a resposta certa
-    payload = {
-        msg.poll.id: {"quiz_id": quizzes.index(q), "mensagem_id": msg.message_id}
-    }
-    context.bot_data.update(payload)
-
+# Receber resposta
 async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resposta = update.poll_answer
-    user_id = resposta.user.id
+    user_id = str(resposta.user.id)
     poll_id = resposta.poll_id
     usuarios = carregar_usuarios()
-    quizzes = carregar_quizzes()
+    quizzes_enviadas = context.bot_data
 
-    if str(user_id) not in usuarios:
-        return  # usuário ainda não fez /start
+    if poll_id not in quizzes_enviadas:
+        return
 
-    if poll_id not in context.bot_data:
-        return  # quiz não encontrado
-
-    quiz_id = context.bot_data[poll_id]["quiz_id"]
-    q = quizzes[quiz_id]
+    q = quizzes_enviadas[poll_id]
     correta = q["correta"]
 
+    if user_id not in usuarios:
+        usuarios[user_id] = {"nome": resposta.user.first_name, "pontos": 50}
+
     if resposta.option_ids and resposta.option_ids[0] == correta:
-        usuarios[str(user_id)]["pontos"] += 35
-        resultado = "✅ Você acertou! +35 pontos!"
+        usuarios[user_id]["pontos"] += 35
+        resultado = "✅ Acertou! +35 pontos"
     else:
-        resultado = f"❌ Errou! A resposta certa era: {q['opcoes'][correta]}"
+        resultado = f"❌ Errou! Resposta correta: {q['opcoes'][correta]}"
 
     salvar_usuarios(usuarios)
-    pontos = usuarios[str(user_id)]["pontos"]
+    pontos = usuarios[user_id]["pontos"]
     nivel = calcular_nivel(pontos)
 
-    # Envia mensagem com feedback
-    await context.bot.send_message(
-        chat_id=user_id,
+    await bot.send_message(
+        chat_id=resposta.user.id,
         text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
     )
 
-async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    usuarios = carregar_usuarios()
-    ranking = sorted(usuarios.items(), key=lambda x: x[1]["pontos"], reverse=True)
+# Loop automático
+async def loop_quizzes(app):
+    quizzes = carregar_quizzes()
+    while True:
+        if hora_valida():
+            q = random.choice(quizzes)
+            q = embaralhar_opcoes(q)
+            print(f"⏰ Enviando quiz: {q['pergunta']}")
+            quizzes_enviadas = await enviar_quiz(q)
+            app.bot_data.update(quizzes_enviadas)
+            await asyncio.sleep(INTERVALO_MINUTOS * 60)
+        else:
+            agora = datetime.now()
+            proximo_inicio = datetime.combine(agora.date(), INICIO)
+            if agora.time() > FIM:
+                proximo_inicio += timedelta(days=1)
+            segundos_ate_inicio = (proximo_inicio - agora).total_seconds()
+            print(f"🛌 Fora do horário. Dormindo {int(segundos_ate_inicio/60)} minutos")
+            await asyncio.sleep(segundos_ate_inicio)
 
-    texto = "🏆 *Ranking Geral:*\n\n"
-    for i, (uid, u) in enumerate(ranking[:10], 1):
-        nivel = calcular_nivel(u["pontos"])
-        texto += f"{i}. {u['nome']} — {u['pontos']} pts (Nível {nivel})\n"
+# Inicialização
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(PollAnswerHandler(receber_resposta))
+    asyncio.create_task(loop_quizzes(app))
+    print("🤖 Bot rodando automaticamente...")
+    await app.run_polling()
 
-    await update.message.reply_text(texto, parse_mode="Markdown")
-
-# === EXECUÇÃO ===
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("quiz", quiz))
-app.add_handler(CommandHandler("ranking", ranking))
-app.add_handler(PollAnswerHandler(receber_resposta))
-
-print("🤖 Bot de quiz rodando...")
-app.run_polling()
+if __name__ == "__main__":
+    asyncio.run(main())
