@@ -10,10 +10,10 @@ from telegram.ext import ApplicationBuilder, PollAnswerHandler, ContextTypes
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 QUIZ_FILE = "quizzes.json"
 USERS_FILE = "usuarios.json"
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # grupo/canal
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 INTERVALO_MINUTOS = 45
-INICIO = time(7, 0)   # 07:00
-FIM = time(23, 0)     # 23:00
+INICIO = time(7, 0)
+FIM = time(23, 0)
 
 bot = Bot(token=TOKEN)
 
@@ -82,10 +82,11 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     correta = q["correta"]
 
     if user_id not in usuarios:
-        usuarios[user_id] = {"nome": resposta.user.first_name, "pontos": 50}
+        usuarios[user_id] = {"nome": resposta.user.first_name, "pontos": 50, "pontos_semana": 0}
 
     if resposta.option_ids and resposta.option_ids[0] == correta:
         usuarios[user_id]["pontos"] += 35
+        usuarios[user_id]["pontos_semana"] += 35
         resultado = "✅ Acertou! +35 pontos"
     else:
         resultado = f"❌ Errou! Resposta correta: {q['opcoes'][correta]}"
@@ -98,6 +99,33 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=resposta.user.id,
         text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
     )
+
+# Função semanal para bônus
+async def ranking_semanal():
+    while True:
+        agora = datetime.now()
+        # verifica se é segunda-feira 00:00
+        if agora.weekday() == 0 and agora.hour == 0 and agora.minute < 1:
+            usuarios = carregar_usuarios()
+            ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana",0), reverse=True)
+            bonus = [730, 500, 250]  # top 3
+
+            mensagem = "🏆 Ranking semanal concluído!\n\n"
+            for i, (user_id, data) in enumerate(ranking[:3]):
+                data["pontos"] += bonus[i]
+                mensagem += f"{i+1}º {data['nome']}: +{bonus[i]} pontos!\n"
+                data["pontos_semana"] = 0  # reset semanal
+            # resetar pontos_semana dos demais
+            for user_id, data in ranking[3:]:
+                data["pontos_semana"] = 0
+
+            salvar_usuarios(usuarios)
+            await bot.send_message(chat_id=CHAT_ID, text=mensagem)
+            print("🏆 Bônus semanal aplicado!")
+            # dormir 61 segundos para não executar novamente no mesmo minuto
+            await asyncio.sleep(61)
+        else:
+            await asyncio.sleep(30)
 
 # Loop automático com shuffle diário
 async def loop_quizzes(app):
@@ -118,7 +146,6 @@ async def loop_quizzes(app):
 
         if hora_valida():
             if not perguntas_ordenadas:
-                # reembaralha se acabou a lista
                 perguntas_ordenadas = quizzes.copy()
                 random.shuffle(perguntas_ordenadas)
 
@@ -141,7 +168,8 @@ async def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(PollAnswerHandler(receber_resposta))
     asyncio.create_task(loop_quizzes(app))
-    print("🤖 Bot rodando automaticamente com shuffle diário...")
+    asyncio.create_task(ranking_semanal())
+    print("🤖 Bot rodando automaticamente com shuffle diário e ranking semanal!")
     await app.run_polling()
 
 if __name__ == "__main__":
