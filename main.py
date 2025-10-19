@@ -1,157 +1,79 @@
-import os
 import json
-import random
-import asyncio
-from datetime import datetime, time, timedelta
-from telegram import Update, Poll
-from telegram.ext import ApplicationBuilder, CommandHandler, PollAnswerHandler, ContextTypes
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
 
-# ================= CONFIGURAÇÃO =================
-TOKEN = os.getenv("TELEGRAM_TOKEN")      # Token do bot
-QUIZZES_FILE = "quizzes.json"
-USUARIOS_FILE = "usuarios.json"
-INTERVALO_MINUTOS = 45
-HORA_INICIO = time(7, 0)
-HORA_FIM = time(23, 0)
+# Ative logs
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
-# ================= FUNÇÕES AUXILIARES =================
-def carregar_json(caminho):
-    if not os.path.exists(caminho):
-        with open(caminho, "w", encoding="utf-8") as f:
-            json.dump({}, f)
-    with open(caminho, "r", encoding="utf-8") as f:
-        return json.load(f)
+# Carregue suas perguntas do JSON
+with open("quiz.json", "r", encoding="utf-8") as f:
+    quiz = json.load(f)
 
-def salvar_json(caminho, dados):
-    with open(caminho, "w", encoding="utf-8") as f:
-        json.dump(dados, f, ensure_ascii=False, indent=4)
-
-def calcular_nivel(pontos):
-    if pontos < 50:
-        return 1
-    return (pontos - 50) // 50 + 2
-
-def hora_valida():
-    agora = datetime.now().time()
-    return HORA_INICIO <= agora <= HORA_FIM
-
-def embaralhar_pergunta(q):
-    opcoes = q["opcoes"].copy()
-    correta = q["correta"]
-    combinacoes = list(enumerate(opcoes))
-    random.shuffle(combinacoes)
-    novas_opcoes = [o for i, o in combinacoes]
-    nova_correta = [i for i, (orig_i, _) in enumerate(combinacoes) if orig_i == correta][0]
-    q["opcoes"] = novas_opcoes
-    q["correta"] = nova_correta
-    return q
-
-# ================= HANDLERS =================
+# Função inicial /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    usuarios = carregar_json(USUARIOS_FILE)
-    if user_id not in usuarios:
-        usuarios[user_id] = {"pontos": 50, "nivel": 1, "pontos_semana": 0}
-        salvar_json(USUARIOS_FILE, usuarios)
-    user = usuarios[user_id]
-    await update.message.reply_text(
-        f"🎯 Bem-vindo ao Quiz Bot!\n"
-        f"⭐ Pontos: {user['pontos']}\n"
-        f"🏅 Nível: {user['nivel']}\n"
-        f"Novos quizzes serão enviados automaticamente!"
-    )
+    context.user_data["current_q"] = 0
+    await send_question(update, context)
 
-# ================= LOOP DE QUIZZES =================
-async def enviar_quiz(app):
-    quizzes = carregar_json(QUIZZES_FILE)
-    usuarios = carregar_json(USUARIOS_FILE)
-    if not quizzes or not usuarios:
-        print("⚠️ Nenhum quiz ou usuário encontrado.")
+# Envia a pergunta atual
+async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    index = context.user_data.get("current_q", 0)
+    if index >= len(quiz):
+        await update.message.reply_text("Parabéns! Você terminou o quiz.")
         return
 
-    q = random.choice(list(quizzes.values()))
-    q = embaralhar_pergunta(q)
+    question = quiz[index]
+    buttons = [
+        [InlineKeyboardButton(opt, callback_data=str(i))]
+        for i, opt in enumerate(question["opcoes"])
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
 
-    # envia o quiz para todos os usuários que já deram /start
-    for user_id in usuarios.keys():
-        try:
-            message = await app.bot.send_poll(
-                chat_id=int(user_id),
-                question=q["pergunta"],
-                options=q["opcoes"],
-                type=Poll.QUIZ,
-                correct_option_id=q["correta"],
-                is_anonymous=False
-            )
-            app.bot_data[message.poll.id] = q
-        except Exception as e:
-            print(f"Erro ao enviar quiz para {user_id}: {e}")
-    print(f"⏰ Quiz enviado: {q['pergunta']}")
+    if update.message:
+        await update.message.reply_text(question["pergunta"], reply_markup=reply_markup)
+    else:  # resposta via callback
+        await update.callback_query.message.reply_text(
+            question["pergunta"], reply_markup=reply_markup
+        )
 
-async def loop_quizzes(app):
-    while True:
-        if hora_valida():
-            await enviar_quiz(app)
-            await asyncio.sleep(INTERVALO_MINUTOS * 60)
-        else:
-            agora = datetime.now()
-            proximo_inicio = datetime.combine(agora.date(), HORA_INICIO)
-            if agora.time() > HORA_FIM:
-                proximo_inicio += timedelta(days=1)
-            segundos_ate_inicio = (proximo_inicio - agora).total_seconds()
-            print(f"🛌 Fora do horário. Dormindo {int(segundos_ate_inicio/60)} minutos")
-            await asyncio.sleep(segundos_ate_inicio)
+# Função chamada quando usuário clica em uma resposta
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-# ================= RANKING SEMANAL =================
-async def ranking_semanal(app):
-    while True:
-        agora = datetime.now()
-        if agora.weekday() == 0 and agora.hour == 0 and agora.minute < 5:  # segunda-feira 00:00
-            usuarios = carregar_json(USUARIOS_FILE)
-            ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana",0), reverse=True)
-            bonus = [730, 500, 250]
-            for i, (uid, data) in enumerate(ranking[:3]):
-                data["pontos"] += bonus[i]
-                data["pontos_semana"] = 0
-            for uid, data in ranking[3:]:
-                data["pontos_semana"] = 0
-            salvar_json(USUARIOS_FILE, usuarios)
-            print("🏆 Ranking semanal atualizado com bônus!")
-        await asyncio.sleep(60)
+    index = context.user_data.get("current_q", 0)
+    question = quiz[index]
+    selected = int(query.data)
 
-# ================= RESPOSTAS =================
-async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    resposta = update.poll_answer
-    user_id = str(resposta.user.id)
-    poll_id = resposta.poll_id
-    usuarios = carregar_json(USUARIOS_FILE)
-    quizzes_enviadas = context.bot_data
+    if selected == question["correta"]:
+        await query.edit_message_text(text=f"✅ Correto! {question['opcoes'][selected]}")
+    else:
+        correta = question["opcoes"][question["correta"]]
+        await query.edit_message_text(
+            text=f"❌ Errado! A resposta correta é: {correta}"
+        )
 
-    if poll_id not in quizzes_enviadas:
-        return
+    # Avança para a próxima pergunta
+    context.user_data["current_q"] = index + 1
+    if context.user_data["current_q"] < len(quiz):
+        await send_question(update, context)
 
-    q = quizzes_enviadas[poll_id]
-    correta = q["correta"]
+# Configurações do bot
+async def main():
+    TOKEN = "TELEGRAM_TOKEN"
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    if user_id not in usuarios:
-        usuarios[user_id] = {"pontos": 50, "nivel": 1, "pontos_semana": 0}
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button))
 
-    acertou = resposta.option_ids and resposta.option_ids[0] == correta
-    if acertou:
-        usuarios[user_id]["pontos"] += 35
-        usuarios[user_id]["pontos_semana"] += 35
+    # Inicia o bot
+    await app.initialize()
+    await app.start()
+    print("Bot rodando...")
+    await app.updater.start_polling()
+    await app.idle()  # Mantém o bot ativo
 
-    usuarios[user_id]["nivel"] = calcular_nivel(usuarios[user_id]["pontos"])
-    salvar_json(USUARIOS_FILE, usuarios)
-
-# ================= INICIALIZAÇÃO =================
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(PollAnswerHandler(receber_resposta))
-
-# Tasks em background
-asyncio.create_task(loop_quizzes(app))
-asyncio.create_task(ranking_semanal(app))
-
-print("🤖 Bot iniciado e rodando 24h!")
-app.run_polling()
+import asyncio
+asyncio.run(main())
