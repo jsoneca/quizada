@@ -1,0 +1,8 @@
+quiz-bot/
+│
+├── main.py               # Código do bot
+├── quizzes.json          # Banco de dados de perguntas
+├── usuarios.json         # Pontuações (gerado automaticamente)
+├── requirements.txt      # Dependências
+├── render.yaml           # Configuração de deploy no Render
+└── .env.example          # Variáveis de ambiente
