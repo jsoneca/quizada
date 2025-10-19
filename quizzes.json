@@ -6,7 +6,7 @@
   },
   {
     "pergunta": "Quem pintou a Mona Lisa?",
-    "opcoes": ["Picasso", "Van Gogh", "Leonardo da Vinci", "Michelangelo"],
+    "opcoes": ["Pablo Picasso", "Vincent van Gogh", "Leonardo da Vinci", "Michelangelo"],
     "correta": 2
   },
   {
