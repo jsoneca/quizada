@@ -1,79 +1,176 @@
+import os
 import json
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
+import random
+import asyncio
+from datetime import datetime, time, timedelta
+from telegram import Bot, Update
+from telegram.ext import ApplicationBuilder, PollAnswerHandler, ContextTypes
 
-# Ative logs
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+# CONFIGURAÇÕES
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+QUIZ_FILE = "quizzes.json"
+USERS_FILE = "usuarios.json"
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+INTERVALO_MINUTOS = 45
+INICIO = time(7, 0)
+FIM = time(23, 0)
 
-# Carregue suas perguntas do JSON
-with open("quiz.json", "r", encoding="utf-8") as f:
-    quiz = json.load(f)
+bot = Bot(token=TOKEN)
 
-# Função inicial /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["current_q"] = 0
-    await send_question(update, context)
+# === Funções auxiliares ===
+def carregar_quizzes():
+    with open(QUIZ_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-# Envia a pergunta atual
-async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    index = context.user_data.get("current_q", 0)
-    if index >= len(quiz):
-        await update.message.reply_text("Parabéns! Você terminou o quiz.")
+def carregar_usuarios():
+    if not os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "w") as f:
+            json.dump({}, f)
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def salvar_usuarios(data):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def calcular_nivel(pontos):
+    if pontos < 50:
+        return 1
+    else:
+        return (pontos - 50) // 50 + 2
+
+def hora_valida():
+    agora = datetime.now().time()
+    return INICIO <= agora <= FIM
+
+# Embaralhar opções mantendo correta
+def embaralhar_opcoes(pergunta):
+    opcoes = pergunta["opcoes"].copy()
+    correta = pergunta["correta"]
+    combinacoes = list(enumerate(opcoes))
+    random.shuffle(combinacoes)
+    novas_opcoes = [o for i, o in combinacoes]
+    nova_correta = [i for i, (orig_i, _) in enumerate(combinacoes) if orig_i == correta][0]
+    pergunta["opcoes"] = novas_opcoes
+    pergunta["correta"] = nova_correta
+    return pergunta
+
+# Enviar quiz
+async def enviar_quiz(q):
+    msg = await bot.send_poll(
+        chat_id=CHAT_ID,
+        question=q["pergunta"],
+        options=q["opcoes"],
+        type="quiz",
+        correct_option_id=q["correta"],
+        is_anonymous=False
+    )
+    return {msg.poll.id: q}
+
+# Receber resposta
+async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    resposta = update.poll_answer
+    user_id = str(resposta.user.id)
+    poll_id = resposta.poll_id
+    usuarios = carregar_usuarios()
+    quizzes_enviadas = context.bot_data
+
+    if poll_id not in quizzes_enviadas:
         return
 
-    question = quiz[index]
-    buttons = [
-        [InlineKeyboardButton(opt, callback_data=str(i))]
-        for i, opt in enumerate(question["opcoes"])
-    ]
-    reply_markup = InlineKeyboardMarkup(buttons)
+    q = quizzes_enviadas[poll_id]
+    correta = q["correta"]
 
-    if update.message:
-        await update.message.reply_text(question["pergunta"], reply_markup=reply_markup)
-    else:  # resposta via callback
-        await update.callback_query.message.reply_text(
-            question["pergunta"], reply_markup=reply_markup
-        )
+    if user_id not in usuarios:
+        usuarios[user_id] = {"nome": resposta.user.first_name, "pontos": 50, "pontos_semana": 0}
 
-# Função chamada quando usuário clica em uma resposta
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    index = context.user_data.get("current_q", 0)
-    question = quiz[index]
-    selected = int(query.data)
-
-    if selected == question["correta"]:
-        await query.edit_message_text(text=f"✅ Correto! {question['opcoes'][selected]}")
+    if resposta.option_ids and resposta.option_ids[0] == correta:
+        usuarios[user_id]["pontos"] += 35
+        usuarios[user_id]["pontos_semana"] += 35
+        resultado = "✅ Acertou! +35 pontos"
     else:
-        correta = question["opcoes"][question["correta"]]
-        await query.edit_message_text(
-            text=f"❌ Errado! A resposta correta é: {correta}"
-        )
+        resultado = f"❌ Errou! Resposta correta: {q['opcoes'][correta]}"
 
-    # Avança para a próxima pergunta
-    context.user_data["current_q"] = index + 1
-    if context.user_data["current_q"] < len(quiz):
-        await send_question(update, context)
+    salvar_usuarios(usuarios)
+    pontos = usuarios[user_id]["pontos"]
+    nivel = calcular_nivel(pontos)
 
-# Configurações do bot
+    await bot.send_message(
+        chat_id=resposta.user.id,
+        text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
+    )
+
+# Função semanal para bônus
+async def ranking_semanal():
+    while True:
+        agora = datetime.now()
+        # verifica se é segunda-feira 00:00
+        if agora.weekday() == 0 and agora.hour == 0 and agora.minute < 1:
+            usuarios = carregar_usuarios()
+            ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana",0), reverse=True)
+            bonus = [730, 500, 250]  # top 3
+
+            mensagem = "🏆 Ranking semanal concluído!\n\n"
+            for i, (user_id, data) in enumerate(ranking[:3]):
+                data["pontos"] += bonus[i]
+                mensagem += f"{i+1}º {data['nome']}: +{bonus[i]} pontos!\n"
+                data["pontos_semana"] = 0  # reset semanal
+            # resetar pontos_semana dos demais
+            for user_id, data in ranking[3:]:
+                data["pontos_semana"] = 0
+
+            salvar_usuarios(usuarios)
+            await bot.send_message(chat_id=CHAT_ID, text=mensagem)
+            print("🏆 Bônus semanal aplicado!")
+            # dormir 61 segundos para não executar novamente no mesmo minuto
+            await asyncio.sleep(61)
+        else:
+            await asyncio.sleep(30)
+
+# Loop automático com shuffle diário
+async def loop_quizzes(app):
+    quizzes = carregar_quizzes()
+    ultimo_dia = None
+    perguntas_ordenadas = []
+
+    while True:
+        agora = datetime.now()
+        dia_atual = agora.date()
+
+        # Shuffle diário
+        if dia_atual != ultimo_dia:
+            perguntas_ordenadas = quizzes.copy()
+            random.shuffle(perguntas_ordenadas)
+            ultimo_dia = dia_atual
+            print("🔀 Perguntas embaralhadas para o dia!")
+
+        if hora_valida():
+            if not perguntas_ordenadas:
+                perguntas_ordenadas = quizzes.copy()
+                random.shuffle(perguntas_ordenadas)
+
+            q = perguntas_ordenadas.pop(0)
+            q = embaralhar_opcoes(q)
+            print(f"⏰ Enviando quiz: {q['pergunta']}")
+            quizzes_enviadas = await enviar_quiz(q)
+            app.bot_data.update(quizzes_enviadas)
+            await asyncio.sleep(INTERVALO_MINUTOS * 60)
+        else:
+            proximo_inicio = datetime.combine(agora.date(), INICIO)
+            if agora.time() > FIM:
+                proximo_inicio += timedelta(days=1)
+            segundos_ate_inicio = (proximo_inicio - agora).total_seconds()
+            print(f"🛌 Fora do horário. Dormindo {int(segundos_ate_inicio/60)} minutos")
+            await asyncio.sleep(segundos_ate_inicio)
+
+# Inicialização
 async def main():
-    TOKEN = "TELEGRAM_TOKEN"
     app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(PollAnswerHandler(receber_resposta))
+    asyncio.create_task(loop_quizzes(app))
+    asyncio.create_task(ranking_semanal())
+    print("🤖 Bot rodando automaticamente com shuffle diário e ranking semanal!")
+    await app.run_polling()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
-
-    # Inicia o bot
-    await app.initialize()
-    await app.start()
-    print("Bot rodando...")
-    await app.updater.start_polling()
-    await app.idle()  # Mantém o bot ativo
-
-import asyncio
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
