@@ -1,15 +1,15 @@
 import os
 import json
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, PollAnswerHandler
 
 # === CONFIGURAÇÕES ===
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 QUIZ_FILE = "quizzes.json"
 USERS_FILE = "usuarios.json"
 
-# === Funções auxiliares ===
+# === FUNÇÕES AUXILIARES ===
 def carregar_quizzes():
     with open(QUIZ_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -29,60 +29,72 @@ def calcular_nivel(pontos):
     if pontos < 50:
         return 1
     else:
-        return (pontos - 50) // 50 + 2  # cresce progressivamente
+        return (pontos - 50) // 50 + 2
 
-# === Comandos do bot ===
+# === COMANDOS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     usuarios = carregar_usuarios()
 
     if str(user.id) not in usuarios:
-        usuarios[str(user.id)] = {"nome": user.first_name, "pontos": 0}
+        usuarios[str(user.id)] = {"nome": user.first_name, "pontos": 50}
         salvar_usuarios(usuarios)
 
     await update.message.reply_text(
-        f"🎮 Olá {user.first_name}! Bem-vindo ao QuizBot!\nUse /quiz para começar e /ranking para ver os melhores!"
+        f"🎮 Olá {user.first_name}! Bem-vindo ao QuizBot!\n\n"
+        "Use /quiz para começar e /ranking para ver os melhores jogadores!"
     )
 
 async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quizzes = carregar_quizzes()
     q = random.choice(quizzes)
-    botoes = [
-        [InlineKeyboardButton(text=o, callback_data=f"{quizzes.index(q)}:{i}")]
-        for i, o in enumerate(q["opcoes"])
-    ]
-    markup = InlineKeyboardMarkup(botoes)
-    await update.message.reply_text(q["pergunta"], reply_markup=markup)
 
-async def resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    # Envia o quiz oficial do Telegram
+    msg = await update.message.reply_poll(
+        question=q["pergunta"],
+        options=q["opcoes"],
+        type="quiz",
+        correct_option_id=q["correta"],
+        is_anonymous=False,
+    )
 
+    # Salva qual pergunta foi enviada e qual é a resposta certa
+    payload = {
+        msg.poll.id: {"quiz_id": quizzes.index(q), "mensagem_id": msg.message_id}
+    }
+    context.bot_data.update(payload)
+
+async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    resposta = update.poll_answer
+    user_id = resposta.user.id
+    poll_id = resposta.poll_id
     usuarios = carregar_usuarios()
     quizzes = carregar_quizzes()
-    user = query.from_user
-    q_id, r_id = map(int, query.data.split(":"))
-    q = quizzes[q_id]
 
-    if str(user.id) not in usuarios:
-        usuarios[str(user.id)] = {"nome": user.first_name, "pontos": 0}
+    if str(user_id) not in usuarios:
+        return  # usuário ainda não fez /start
 
-    pontos_atuais = usuarios[str(user.id)]["pontos"]
+    if poll_id not in context.bot_data:
+        return  # quiz não encontrado
 
-    # Sistema de pontuação
-    if r_id == q["correta"]:
-        usuarios[str(user.id)]["pontos"] += 35
-        texto = f"✅ Correto! +35 pontos!"
+    quiz_id = context.bot_data[poll_id]["quiz_id"]
+    q = quizzes[quiz_id]
+    correta = q["correta"]
+
+    if resposta.option_ids and resposta.option_ids[0] == correta:
+        usuarios[str(user_id)]["pontos"] += 35
+        resultado = "✅ Você acertou! +35 pontos!"
     else:
-        texto = f"❌ Errado! Resposta certa: {q['opcoes'][q['correta']]}"
+        resultado = f"❌ Errou! A resposta certa era: {q['opcoes'][correta]}"
 
     salvar_usuarios(usuarios)
+    pontos = usuarios[str(user_id)]["pontos"]
+    nivel = calcular_nivel(pontos)
 
-    novos_pontos = usuarios[str(user.id)]["pontos"]
-    nivel = calcular_nivel(novos_pontos)
-
-    await query.edit_message_text(
-        f"{texto}\n\n⭐ Pontos: {novos_pontos}\n🏅 Nível: {nivel}"
+    # Envia mensagem com feedback
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
     )
 
 async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,12 +108,12 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(texto, parse_mode="Markdown")
 
-# === Inicialização ===
+# === EXECUÇÃO ===
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("quiz", quiz))
 app.add_handler(CommandHandler("ranking", ranking))
-app.add_handler(CallbackQueryHandler(resposta))
+app.add_handler(PollAnswerHandler(receber_resposta))
 
-print("🤖 Bot rodando...")
+print("🤖 Bot de quiz rodando...")
 app.run_polling()
