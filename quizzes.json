@@ -1,0 +1,17 @@
+[
+  {
+    "pergunta": "Qual é o maior planeta do Sistema Solar?",
+    "opcoes": ["Terra", "Marte", "Júpiter", "Saturno"],
+    "correta": 2
+  },
+  {
+    "pergunta": "Quem pintou a Mona Lisa?",
+    "opcoes": ["Picasso", "Van Gogh", "Leonardo da Vinci", "Michelangelo"],
+    "correta": 2
+  },
+  {
+    "pergunta": "Qual é o símbolo químico da água?",
+    "opcoes": ["H2O", "O2", "CO2", "NaCl"],
+    "correta": 0
+  }
+]
