@@ -7,18 +7,19 @@ from telegram import Bot, Update
 from telegram.ext import ApplicationBuilder, PollAnswerHandler, ContextTypes
 import matplotlib.pyplot as plt
 
-# CONFIGURAÇÕES
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+# ===== Configurações =====
+TOKEN = os.getenv("TELEGRAM_TOKEN")  # Token do bot
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # ID do grupo do Telegram
 QUIZ_FILE = "quizzes.json"
 USERS_FILE = "usuarios.json"
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 INTERVALO_MINUTOS = 45
 INICIO = time(7, 0)
 FIM = time(23, 0)
 
 bot = Bot(token=TOKEN)
 
-# === Funções auxiliares ===
+# ===== Funções auxiliares =====
 def carregar_quizzes():
     with open(QUIZ_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -37,8 +38,7 @@ def salvar_usuarios(data):
 def calcular_nivel(pontos):
     if pontos < 50:
         return 1
-    else:
-        return (pontos - 50) // 50 + 2
+    return (pontos - 50) // 50 + 2
 
 def hora_valida():
     agora = datetime.now().time()
@@ -55,6 +55,7 @@ def embaralhar_opcoes(pergunta):
     pergunta["correta"] = nova_correta
     return pergunta
 
+# ===== Funções do bot =====
 async def enviar_quiz(q):
     msg = await bot.send_poll(
         chat_id=CHAT_ID,
@@ -98,7 +99,7 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
     )
 
-# === Funções de ranking e gráfico ===
+# ===== Ranking semanal =====
 def gerar_grafico_semana(usuarios):
     nomes = [data["nome"] for data in usuarios.values()]
     pontos = [data.get("pontos_semana",0) for data in usuarios.values()]
@@ -116,6 +117,7 @@ def gerar_grafico_semana(usuarios):
 async def ranking_semanal():
     while True:
         agora = datetime.now()
+        # Segunda-feira, 00:00 ~ 00:01
         if agora.weekday() == 0 and agora.hour == 0 and agora.minute < 1:
             usuarios = carregar_usuarios()
             ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana",0), reverse=True)
@@ -133,7 +135,6 @@ async def ranking_semanal():
 
             salvar_usuarios(usuarios)
 
-            # Enviar gráfico
             arquivo_grafico = gerar_grafico_semana(usuarios)
             with open(arquivo_grafico, "rb") as f:
                 await bot.send_photo(chat_id=CHAT_ID, photo=f, caption=mensagem_bonus)
@@ -143,7 +144,7 @@ async def ranking_semanal():
         else:
             await asyncio.sleep(30)
 
-# === Loop diário com shuffle ===
+# ===== Loop diário de quizzes =====
 async def loop_quizzes(app):
     quizzes = carregar_quizzes()
     ultimo_dia = None
@@ -178,14 +179,14 @@ async def loop_quizzes(app):
             print(f"🛌 Fora do horário. Dormindo {int(segundos_ate_inicio/60)} minutos")
             await asyncio.sleep(segundos_ate_inicio)
 
-# === Inicialização ===
+# ===== Inicialização =====
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(PollAnswerHandler(receber_resposta))
 
+    # Cria tarefas assíncronas
     asyncio.create_task(loop_quizzes(app))
     asyncio.create_task(ranking_semanal())
 
-    print("🤖 Bot rodando com shuffle diário, ranking semanal e gráfico!")
-
+    print("🤖 Bot rodando com quizzes, ranking semanal e gráficos!")
     app.run_polling()
