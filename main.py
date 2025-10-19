@@ -98,7 +98,7 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
     )
 
-# Função para gerar gráfico semanal
+# === Funções de ranking e gráfico ===
 def gerar_grafico_semana(usuarios):
     nomes = [data["nome"] for data in usuarios.values()]
     pontos = [data.get("pontos_semana",0) for data in usuarios.values()]
@@ -113,16 +113,14 @@ def gerar_grafico_semana(usuarios):
     plt.close()
     return arquivo
 
-# Função semanal para ranking, bônus e gráfico
 async def ranking_semanal():
     while True:
         agora = datetime.now()
         if agora.weekday() == 0 and agora.hour == 0 and agora.minute < 1:
             usuarios = carregar_usuarios()
             ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana",0), reverse=True)
-            bonus = [730, 500, 250]  # top 3
+            bonus = [730, 500, 250]
 
-            # Aplicar bônus e notificações privadas
             mensagem_bonus = "🎉 **Bônus Semanal Top 3** 🎉\n\n"
             for i, (user_id, data) in enumerate(ranking[:3]):
                 data["pontos"] += bonus[i]
@@ -130,13 +128,12 @@ async def ranking_semanal():
                 data["pontos_semana"] = 0
                 await bot.send_message(chat_id=user_id, text=f"🏆 Parabéns! Você ficou em {i+1}º lugar da semana e recebeu +{bonus[i]} pontos!")
 
-            # Resetar pontos_semana dos demais
             for user_id, data in ranking[3:]:
                 data["pontos_semana"] = 0
 
             salvar_usuarios(usuarios)
 
-            # Gerar gráfico
+            # Enviar gráfico
             arquivo_grafico = gerar_grafico_semana(usuarios)
             with open(arquivo_grafico, "rb") as f:
                 await bot.send_photo(chat_id=CHAT_ID, photo=f, caption=mensagem_bonus)
@@ -146,7 +143,7 @@ async def ranking_semanal():
         else:
             await asyncio.sleep(30)
 
-# Loop diário com shuffle
+# === Loop diário com shuffle ===
 async def loop_quizzes(app):
     quizzes = carregar_quizzes()
     ultimo_dia = None
@@ -181,7 +178,7 @@ async def loop_quizzes(app):
             print(f"🛌 Fora do horário. Dormindo {int(segundos_ate_inicio/60)} minutos")
             await asyncio.sleep(segundos_ate_inicio)
 
-# Inicialização
+# === Inicialização ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(PollAnswerHandler(receber_resposta))
