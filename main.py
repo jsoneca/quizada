@@ -145,16 +145,13 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     salvar_json(USUARIOS_FILE, usuarios)
 
 # ================= INICIALIZAÇÃO =================
-async def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(PollAnswerHandler(receber_resposta))
+app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(PollAnswerHandler(receber_resposta))
 
-    asyncio.create_task(loop_quizzes(app))
-    asyncio.create_task(ranking_semanal(app))
+# Tasks em background
+asyncio.create_task(loop_quizzes(app))
+asyncio.create_task(ranking_semanal(app))
 
-    print("🤖 Bot iniciado e rodando 24h no Render!")
-    await app.run_polling()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+print("🤖 Bot iniciado e rodando 24h!")
+app.run_polling()
