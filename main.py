@@ -1,192 +1,132 @@
-import os
+import asyncio
 import json
 import random
-import asyncio
-from datetime import datetime, time, timedelta
-from telegram import Bot, Update
-from telegram.ext import ApplicationBuilder, PollAnswerHandler, ContextTypes
-import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+from telegram import Poll
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    PollAnswerHandler,
+)
 
-# ===== Configurações =====
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # Token do bot
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # ID do grupo do Telegram
-QUIZ_FILE = "quizzes.json"
-USERS_FILE = "usuarios.json"
+TOKEN = "SEU_TOKEN_AQUI"
 
-INTERVALO_MINUTOS = 45
-INICIO = time(7, 0)
-FIM = time(23, 0)
+# ------------------- BANCO DE DADOS -------------------
+USUARIOS_FILE = "usuarios.json"
+QUIZZES_FILE = "quizzes.json"
 
-bot = Bot(token=TOKEN)
+def carregar_json(caminho):
+    try:
+        with open(caminho, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
-# ===== Funções auxiliares =====
-def carregar_quizzes():
-    with open(QUIZ_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+def salvar_json(caminho, dados):
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(dados, f, ensure_ascii=False, indent=4)
 
-def carregar_usuarios():
-    if not os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "w") as f:
-            json.dump({}, f)
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+usuarios = carregar_json(USUARIOS_FILE)
+quizzes = carregar_json(QUIZZES_FILE)
 
-def salvar_usuarios(data):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+# ------------------- FUNÇÕES DO JOGO -------------------
+def get_user(user_id):
+    if str(user_id) not in usuarios:
+        usuarios[str(user_id)] = {"pontos": 50, "nivel": 1, "acertos": 0}
+        salvar_json(USUARIOS_FILE, usuarios)
+    return usuarios[str(user_id)]
 
-def calcular_nivel(pontos):
-    if pontos < 50:
-        return 1
-    return (pontos - 50) // 50 + 2
+def atualizar_pontos(user_id, acertou):
+    user = get_user(user_id)
+    if acertou:
+        user["pontos"] += 35
+        user["acertos"] += 1
+    if user["acertos"] % 5 == 0 and user["acertos"] > 0:
+        user["nivel"] += 1
+    salvar_json(USUARIOS_FILE, usuarios)
 
-def hora_valida():
-    agora = datetime.now().time()
-    return INICIO <= agora <= FIM
-
-def embaralhar_opcoes(pergunta):
-    opcoes = pergunta["opcoes"].copy()
-    correta = pergunta["correta"]
-    combinacoes = list(enumerate(opcoes))
-    random.shuffle(combinacoes)
-    novas_opcoes = [o for i, o in combinacoes]
-    nova_correta = [i for i, (orig_i, _) in enumerate(combinacoes) if orig_i == correta][0]
-    pergunta["opcoes"] = novas_opcoes
-    pergunta["correta"] = nova_correta
-    return pergunta
-
-# ===== Funções do bot =====
-async def enviar_quiz(q):
-    msg = await bot.send_poll(
-        chat_id=CHAT_ID,
-        question=q["pergunta"],
-        options=q["opcoes"],
-        type="quiz",
-        correct_option_id=q["correta"],
-        is_anonymous=False
+async def start(update, context):
+    user = get_user(update.effective_user.id)
+    await update.message.reply_text(
+        f"🎯 Bem-vindo(a) ao Quiz Bot!\n\n"
+        f"Você começa com {user['pontos']} pontos.\n"
+        f"Seu nível atual: {user['nivel']}.\n\n"
+        f"Fique ligado — novos quizzes são postados automaticamente!"
     )
-    return {msg.poll.id: q}
 
-async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    resposta = update.poll_answer
-    user_id = str(resposta.user.id)
-    poll_id = resposta.poll_id
-    usuarios = carregar_usuarios()
-    quizzes_enviadas = context.bot_data
-
-    if poll_id not in quizzes_enviadas:
+# ------------------- LOOP DE QUIZZES -------------------
+async def enviar_quiz(app):
+    if not quizzes:
+        print("⚠️ Nenhum quiz encontrado em quizzes.json")
         return
 
-    q = quizzes_enviadas[poll_id]
-    correta = q["correta"]
+    now = datetime.now().time()
+    if not (7 <= now.hour < 23):
+        print("⏸ Fora do horário (7h–23h), não enviando quiz.")
+        return
 
-    if user_id not in usuarios:
-        usuarios[user_id] = {"nome": resposta.user.first_name, "pontos": 50, "pontos_semana": 0}
+    quiz = random.choice(list(quizzes.values()))
+    pergunta = quiz["pergunta"]
+    opcoes = quiz["opcoes"]
+    resposta = quiz["resposta"]
 
-    if resposta.option_ids and resposta.option_ids[0] == correta:
-        usuarios[user_id]["pontos"] += 35
-        usuarios[user_id]["pontos_semana"] += 35
-        resultado = "✅ Acertou! +35 pontos"
-    else:
-        resultado = f"❌ Errou! Resposta correta: {q['opcoes'][correta]}"
-
-    salvar_usuarios(usuarios)
-    pontos = usuarios[user_id]["pontos"]
-    nivel = calcular_nivel(pontos)
-
-    await bot.send_message(
-        chat_id=resposta.user.id,
-        text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
+    # Envia em formato de quiz (com resposta certa)
+    chat_id = "SEU_CHAT_ID_AQUI"  # pode ser grupo ou canal
+    message = await app.bot.send_poll(
+        chat_id=chat_id,
+        question=pergunta,
+        options=opcoes,
+        type=Poll.QUIZ,
+        correct_option_id=resposta,
+        is_anonymous=False,
     )
+    print(f"✅ Quiz enviado: {pergunta}")
 
-# ===== Ranking semanal =====
-def gerar_grafico_semana(usuarios):
-    nomes = [data["nome"] for data in usuarios.values()]
-    pontos = [data.get("pontos_semana",0) for data in usuarios.values()]
+async def loop_quizzes(app):
+    while True:
+        await enviar_quiz(app)
+        await asyncio.sleep(45 * 60)  # 45 minutos
 
-    plt.figure(figsize=(10,6))
-    plt.barh(nomes, pontos, color="orange")
-    plt.xlabel("Pontos Semanais")
-    plt.title("🏆 Ranking Semanal")
-    plt.tight_layout()
-    arquivo = "ranking_semanal.png"
-    plt.savefig(arquivo)
-    plt.close()
-    return arquivo
-
+# ------------------- RANKING SEMANAL -------------------
 async def ranking_semanal():
     while True:
         agora = datetime.now()
-        # Segunda-feira, 00:00 ~ 00:01
-        if agora.weekday() == 0 and agora.hour == 0 and agora.minute < 1:
-            usuarios = carregar_usuarios()
-            ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana",0), reverse=True)
-            bonus = [730, 500, 250]
+        if agora.weekday() == 6 and agora.hour == 23:  # domingo 23h
+            ranking = sorted(usuarios.items(), key=lambda x: x[1]["pontos"], reverse=True)
+            top3 = ranking[:3]
+            if len(top3) > 0:
+                bonus = [730, 500, 300]
+                for i, (uid, data) in enumerate(top3):
+                    data["pontos"] += bonus[i]
+                salvar_json(USUARIOS_FILE, usuarios)
+                print(f"🏆 Ranking semanal atualizado! Bônus aplicados aos top 3.")
+        await asyncio.sleep(3600)  # verifica a cada hora
 
-            mensagem_bonus = "🎉 **Bônus Semanal Top 3** 🎉\n\n"
-            for i, (user_id, data) in enumerate(ranking[:3]):
-                data["pontos"] += bonus[i]
-                mensagem_bonus += f"{i+1}º {data['nome']}: +{bonus[i]} pontos!\n"
-                data["pontos_semana"] = 0
-                await bot.send_message(chat_id=user_id, text=f"🏆 Parabéns! Você ficou em {i+1}º lugar da semana e recebeu +{bonus[i]} pontos!")
+# ------------------- RESPOSTAS -------------------
+async def receber_resposta(update, context):
+    resposta = update.poll_answer
+    user_id = resposta.user.id
+    user_respostas = resposta.option_ids
 
-            for user_id, data in ranking[3:]:
-                data["pontos_semana"] = 0
+    quiz = quizzes.get(resposta.poll_id)
+    if quiz:
+        correta = quiz["resposta"]
+        acertou = correta in user_respostas
+        atualizar_pontos(user_id, acertou)
+        print(f"✅ {'Acertou' if acertou else 'Errou'} - User {user_id}")
 
-            salvar_usuarios(usuarios)
-
-            arquivo_grafico = gerar_grafico_semana(usuarios)
-            with open(arquivo_grafico, "rb") as f:
-                await bot.send_photo(chat_id=CHAT_ID, photo=f, caption=mensagem_bonus)
-
-            print("🏆 Bônus e gráfico semanal enviados!")
-            await asyncio.sleep(61)
-        else:
-            await asyncio.sleep(30)
-
-# ===== Loop diário de quizzes =====
-async def loop_quizzes(app):
-    quizzes = carregar_quizzes()
-    ultimo_dia = None
-    perguntas_ordenadas = []
-
-    while True:
-        agora = datetime.now()
-        dia_atual = agora.date()
-
-        if dia_atual != ultimo_dia:
-            perguntas_ordenadas = quizzes.copy()
-            random.shuffle(perguntas_ordenadas)
-            ultimo_dia = dia_atual
-            print("🔀 Perguntas embaralhadas para o dia!")
-
-        if hora_valida():
-            if not perguntas_ordenadas:
-                perguntas_ordenadas = quizzes.copy()
-                random.shuffle(perguntas_ordenadas)
-
-            q = perguntas_ordenadas.pop(0)
-            q = embaralhar_opcoes(q)
-            print(f"⏰ Enviando quiz: {q['pergunta']}")
-            quizzes_enviadas = await enviar_quiz(q)
-            app.bot_data.update(quizzes_enviadas)
-            await asyncio.sleep(INTERVALO_MINUTOS * 60)
-        else:
-            proximo_inicio = datetime.combine(agora.date(), INICIO)
-            if agora.time() > FIM:
-                proximo_inicio += timedelta(days=1)
-            segundos_ate_inicio = (proximo_inicio - agora).total_seconds()
-            print(f"🛌 Fora do horário. Dormindo {int(segundos_ate_inicio/60)} minutos")
-            await asyncio.sleep(segundos_ate_inicio)
-
-# ===== Inicialização =====
-if __name__ == "__main__":
+# ------------------- EXECUÇÃO PRINCIPAL -------------------
+async def main():
     app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(PollAnswerHandler(receber_resposta))
 
-    # Cria tarefas assíncronas
     asyncio.create_task(loop_quizzes(app))
     asyncio.create_task(ranking_semanal())
 
-    print("🤖 Bot rodando com quizzes, ranking semanal e gráficos!")
-    app.run_polling()
+    print("🤖 Bot rodando 24h no Render!")
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
