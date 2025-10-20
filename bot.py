@@ -22,9 +22,8 @@ BONUS_SEMANAL = {1: 500, 2: 400, 3: 300, 4: 300}
 PONTOS_INICIAIS = 50
 
 # === ADMINISTRAÇÃO ===
-# IDs autorizados a usar /addquiz
 ADMIN_IDS = [
-    8126443922,  # 🔹 Substitua pelo seu ID do Telegram
+    123456789,  # 🔹 Substitua pelo seu ID do Telegram
 ]
 
 # === ARQUIVOS ===
@@ -47,6 +46,23 @@ def salvar_dados(arquivo, dados):
 quizzes = carregar_dados(QUIZ_FILE, [])
 pontuacoes = carregar_dados(PONTOS_FILE, {})
 chats_ativos = carregar_dados(CHATS_FILE, [])
+
+# === FUNÇÃO DE NÍVEIS ===
+def obter_nivel(pontos):
+    if pontos < 200:
+        return "🎯 Iniciante"
+    elif pontos < 500:
+        return "🔰 Aprendiz"
+    elif pontos < 1000:
+        return "⚡ Competidor"
+    elif pontos < 2000:
+        return "🥈 Avançado"
+    elif pontos < 3500:
+        return "🥇 Mestre"
+    elif pontos < 5000:
+        return "🔥 Lendário"
+    else:
+        return "👑 Imortal"
 
 # === QUIZ AUTOMÁTICO ===
 async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
@@ -86,7 +102,8 @@ async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pontos += PONTOS_ACERTO
         pontuacoes[user_id] = {"nome": nome, "pontos": pontos}
         salvar_dados(PONTOS_FILE, pontuacoes)
-        await query.edit_message_text(f"✅ Correto, {nome}! Você ganhou {PONTOS_ACERTO} pontos.")
+        nivel = obter_nivel(pontos)
+        await query.edit_message_text(f"✅ Correto, {nome}! Você ganhou {PONTOS_ACERTO} pontos.\n🏅 Novo nível: {nivel}")
     else:
         await query.edit_message_text(
             f"❌ Errado, {nome}! A resposta certa era *{resposta_correta}*.",
@@ -102,7 +119,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Olá! Eu sou o *QuizBot!* 🎯\n"
         "A cada 45 minutos tem um novo quiz!\n"
-        "Use /ranking para ver o placar atual.\n"
+        "Use /ranking ou /top10 para ver os melhores!\n"
         "Bons jogos e boa sorte! 🍀",
         parse_mode="Markdown"
     )
@@ -116,7 +133,32 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "🏆 *Ranking Atual:*\n\n"
     for i, (user_id, dados) in enumerate(ranking[:10], start=1):
         medalha = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        msg += f"{medalha} {dados['nome']} — {dados['pontos']} pts\n"
+        nivel = obter_nivel(dados["pontos"])
+        msg += f"{medalha} {dados['nome']} — {dados['pontos']} pts ({nivel})\n"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# === /TOP10 ===
+async def top10(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        await update.message.reply_text("🚀 Ainda não há jogadores no ranking!")
+        return
+
+    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
+    msg = "🔥 *TOP 10 da Semana!*\n\n"
+    for i, (uid, dados) in enumerate(ranking[:10], start=1):
+        if i == 1:
+            emoji = "👑"
+        elif i == 2:
+            emoji = "🥈"
+        elif i == 3:
+            emoji = "🥉"
+        elif i <= 5:
+            emoji = "⭐"
+        else:
+            emoji = "🎯"
+        nivel = obter_nivel(dados["pontos"])
+        msg += f"{emoji} *{i}. {dados['nome']}* — {dados['pontos']} pts ({nivel})\n"
+    msg += "\n🏁 Continue participando e suba de nível!"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # === SISTEMA DE BÔNUS ===
@@ -204,8 +246,8 @@ async def boas_vindas(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"👋 Bem-vindo(a), *{nome}!* 🎉\n\n"
                 "Sou o *QuizBot!* 🧠\n"
                 "👉 Participe dos quizzes automáticos!\n"
-                "👉 Veja o ranking com /ranking\n\n"
-                "Divirta-se e boa sorte! 🍀"
+                "👉 Veja o ranking com /top10\n\n"
+                "Suba de nível e torne-se um *Imortal*! 👑"
             ),
             parse_mode="Markdown"
         )
@@ -222,6 +264,7 @@ async def main():
     # Handlers principais
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ranking", ranking))
+    app.add_handler(CommandHandler("top10", top10))
     app.add_handler(CallbackQueryHandler(resposta_quiz))
 
     # /addquiz protegido
@@ -244,7 +287,6 @@ async def main():
     app.job_queue.run_daily(aplicar_bonus_diario, time=time(hour=22, tzinfo=TIMEZONE))
     app.job_queue.run_daily(aplicar_bonus_semanal, time=time(hour=23, tzinfo=TIMEZONE), days=(6,))
 
-    # Reset de temporada controlado manualmente
     async def verificar_reset_temporada(context: ContextTypes.DEFAULT_TYPE):
         mes_atual = datetime.now(TIMEZONE).month
         if mes_atual in [3, 6, 9, 12]:
@@ -256,7 +298,7 @@ async def main():
         days=(1,),
     )
 
-    print("🤖 Bot rodando com quiz, bônus, boas-vindas e /addquiz protegido.")
+    print("🤖 Bot ativo com sistema de níveis, ranking e quiz automático!")
     await app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
