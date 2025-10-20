@@ -17,7 +17,7 @@ from telegram.ext import (
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
 # ⚙️ Configurações principais
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 QUIZ_INTERVALO = 45 * 60  # 45 minutos
@@ -117,7 +117,6 @@ async def enviar_quiz(context: CallbackContext):
     global ultima_mensagem_id
     agora = datetime.datetime.now(TIMEZONE)
 
-    # Só envia entre 7h e 23h
     if not (7 <= agora.hour < 23):
         return
 
@@ -172,19 +171,17 @@ async def ranking(update: Update, context: CallbackContext):
 
 
 # ===============================
-# 🔹 FUNÇÃO PRINCIPAL
+# 🔹 MAIN (compatível com Render)
 # ===============================
 
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addquiz", add_quiz))
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, responder))
 
-    # Tarefas agendadas
     job_queue = app.job_queue
     job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10, data={"chat_id": OWNER_ID})
 
@@ -193,18 +190,12 @@ async def main():
         data_reset = datetime.datetime(ano_atual, mes, 1, 0, 0, tzinfo=TIMEZONE)
         job_queue.run_once(resetar_temporada, when=data_reset)
 
-    print("🤖 Bot rodando com quiz, bônus, estações e limpeza automática.")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("🤖 Bot rodando normalmente com Python 3.13 no Render...")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()  # mantém o bot rodando sem fechar o loop
 
-
-# ===============================
-# 🔹 INICIALIZAÇÃO SEGURA (Render + asyncio)
-# ===============================
 
 if __name__ == "__main__":
-    try:
-        loop = asyncio.get_running_loop()
-        asyncio.ensure_future(main())
-        loop.run_forever()
-    except RuntimeError:
-        asyncio.run(main())
+    asyncio.run(main())
