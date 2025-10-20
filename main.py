@@ -12,8 +12,7 @@ from telegram.ext import (
 )
 import nest_asyncio
 
-# === CONFIGURAÇÕES ===
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # obrigatório
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 QUIZ_FILE = "quizzes.json"
 USERS_FILE = "usuarios.json"
 INTERVALO_MINUTOS = 45
@@ -22,13 +21,10 @@ HORA_FIM = time(23, 0)
 
 bot = Bot(token=TOKEN)
 
-
-# === Funções utilitárias ===
 def carregar_quizzes():
     with open(QUIZ_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
     return list(data.values()) if isinstance(data, dict) else data
-
 
 def carregar_usuarios():
     if not os.path.exists(USERS_FILE):
@@ -37,20 +33,16 @@ def carregar_usuarios():
     with open(USERS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def salvar_usuarios(data):
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-
 def calcular_nivel(pontos):
     return 1 if pontos < 50 else (pontos - 50) // 50 + 2
-
 
 def hora_valida():
     agora = datetime.now().time()
     return HORA_INICIO <= agora <= HORA_FIM
-
 
 def embaralhar_opcoes(pergunta):
     opcoes = pergunta["opcoes"].copy()
@@ -61,23 +53,16 @@ def embaralhar_opcoes(pergunta):
     nova_correta = [i for i, (orig_i, _) in enumerate(combinacoes) if orig_i == correta][0]
     return {"pergunta": pergunta["pergunta"], "opcoes": novas_opcoes, "correta": nova_correta}
 
-
-# === Handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     usuarios = carregar_usuarios()
     uid = str(user.id)
-
     if uid not in usuarios:
         usuarios[uid] = {"nome": user.first_name, "pontos": 50, "pontos_semana": 0}
         salvar_usuarios(usuarios)
-
     await update.message.reply_text(
-        "🎯 Bem-vindo ao Quiz Bot!\n"
-        "Você foi registrado e receberá quizzes automaticamente!\n"
-        "Use /quiz para receber uma pergunta agora."
+        "🎯 Bem-vindo ao Quiz Bot!\nVocê foi registrado e receberá quizzes automaticamente!\nUse /quiz para receber uma pergunta agora."
     )
-
 
 async def quiz_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quizzes = carregar_quizzes()
@@ -91,32 +76,25 @@ async def quiz_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.bot_data[msg.poll.id] = q
 
-
 async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resposta = update.poll_answer
     uid = str(resposta.user.id)
     pid = resposta.poll_id
     usuarios = carregar_usuarios()
-
     if pid not in context.bot_data:
         return
-
     q = context.bot_data[pid]
     correta = q["correta"]
-
     if uid not in usuarios:
         usuarios[uid] = {"nome": resposta.user.first_name, "pontos": 50, "pontos_semana": 0}
-
     if resposta.option_ids and resposta.option_ids[0] == correta:
         usuarios[uid]["pontos"] += 35
         usuarios[uid]["pontos_semana"] += 35
         texto = "✅ Acertou! +35 pontos"
     else:
         texto = f"❌ Errou! Resposta correta: {q['opcoes'][correta]}"
-
     usuarios[uid]["nivel"] = calcular_nivel(usuarios[uid]["pontos"])
     salvar_usuarios(usuarios)
-
     try:
         await bot.send_message(
             chat_id=int(uid),
@@ -125,8 +103,6 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Erro ao enviar mensagem para {uid}: {e}")
 
-
-# === Tarefas automáticas ===
 async def ranking_semanal():
     while True:
         agora = datetime.now()
@@ -134,50 +110,40 @@ async def ranking_semanal():
             usuarios = carregar_usuarios()
             ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana", 0), reverse=True)
             bonus = [730, 500, 250]
-            mensagem = "🏆 Ranking semanal concluído!\n\n"
             for i, (uid, data) in enumerate(ranking[:3]):
                 data["pontos"] += bonus[i]
-                mensagem += f"{i+1}º {data['nome']}: +{bonus[i]} pontos!\n"
                 data["pontos_semana"] = 0
+                try:
+                    await bot.send_message(chat_id=int(uid), text=f"🏆 Parabéns! Você ficou no top {i+1} da semana!")
+                except Exception:
+                    pass
             for uid, data in ranking[3:]:
                 data["pontos_semana"] = 0
             salvar_usuarios(usuarios)
-            for uid, _ in ranking[:3]:
-                try:
-                    await bot.send_message(chat_id=int(uid), text="🏆 Parabéns! Você ficou no top 3 da semana!")
-                except Exception:
-                    pass
             print("🏅 Ranking semanal atualizado.")
             await asyncio.sleep(61)
         else:
             await asyncio.sleep(30)
 
-
 async def loop_quizzes(app):
     quizzes = carregar_quizzes()
     ultimo_dia = None
     perguntas = []
-
     while True:
         agora = datetime.now()
         dia = agora.date()
-
         if dia != ultimo_dia:
             perguntas = quizzes.copy()
             random.shuffle(perguntas)
             ultimo_dia = dia
             print("🔀 Novo embaralhamento diário.")
-
         if hora_valida():
             if not perguntas:
                 perguntas = quizzes.copy()
                 random.shuffle(perguntas)
-
             q = embaralhar_opcoes(perguntas.pop(0))
             usuarios = carregar_usuarios()
-            if not usuarios:
-                print("⚠️ Nenhum usuário registrado, aguardando...")
-            else:
+            if usuarios:
                 for uid in list(usuarios.keys()):
                     try:
                         msg = await bot.send_poll(
@@ -200,23 +166,15 @@ async def loop_quizzes(app):
             print(f"🛌 Fora do horário. Dormindo {int(sleep/60)} min.")
             await asyncio.sleep(sleep)
 
-
-# === Inicialização ===
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("quiz", quiz_now))
     app.add_handler(PollAnswerHandler(receber_resposta))
-
     asyncio.create_task(loop_quizzes(app))
     asyncio.create_task(ranking_semanal())
-
-    print("🤖 Bot iniciado e rodando normalmente no Render/Replit!")
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()  # mantém o bot rodando
-
+    print("🤖 Bot iniciado e rodando no Render (versão compatível)!")
+    await app.run_polling()
 
 if __name__ == "__main__":
     nest_asyncio.apply()
