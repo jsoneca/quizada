@@ -1,70 +1,96 @@
 import asyncio
-import json
 import random
-from datetime import datetime, time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes, ConversationHandler, ChatMemberHandler
-)
-import os
+from datetime import datetime, time, timedelta
 import pytz
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+    MessageHandler,
+    ConversationHandler,
+    ChatMemberHandler,
+    filters,
+)
 
 # === CONFIGURAÇÕES ===
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = "SEU_TOKEN_AQUI"
+
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
-QUIZ_INTERVALO = 45 * 60  # 45 minutos
+QUIZ_INTERVALO = 45 * 60  # 45 minutos em segundos
 HORARIO_INICIO = 7
 HORARIO_FIM = 23
 PONTOS_ACERTO = 35
-BONUS_DIARIO = 200
-BONUS_SEMANAL = {1: 500, 2: 400, 3: 300, 4: 300}
 PONTOS_INICIAIS = 50
 
-# === ADMINISTRAÇÃO ===
+# IDs de administradores autorizados a usar /addquiz
 ADMIN_IDS = [
-    8126443922,  # 🔹 Substitua pelo seu ID do Telegram
+    8126443922,  # coloque aqui seu ID do Telegram
 ]
 
-# === ARQUIVOS ===
-QUIZ_FILE = "quizzes.json"
-PONTOS_FILE = "pontuacoes.json"
-CHATS_FILE = "chats_ativos.json"
+# === DADOS TEMPORÁRIOS ===
+quizzes = [
+    {"q": "Qual é a capital da França?", "opts": ["Paris", "Roma", "Londres"], "ans": "Paris"},
+]
+pontuacoes = {}
+chats_ativos = set()
 
-# === FUNÇÕES DE DADOS ===
-def carregar_dados(arquivo, padrao):
-    if os.path.exists(arquivo):
-        with open(arquivo, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return padrao
+# === ESTADOS DA CONVERSA /addquiz ===
+PERGUNTA, OPCOES, RESPOSTA = range(3)
 
-def salvar_dados(arquivo, dados):
-    with open(arquivo, "w", encoding="utf-8") as f:
-        json.dump(dados, f, indent=2, ensure_ascii=False)
 
-# === CARREGAMENTO INICIAL ===
-quizzes = carregar_dados(QUIZ_FILE, [])
-pontuacoes = carregar_dados(PONTOS_FILE, {})
-chats_ativos = carregar_dados(CHATS_FILE, [])
+# === BOAS-VINDAS ===
+async def boas_vindas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    novo_membro = update.chat_member.new_chat_member
+    if novo_membro.status == "member":
+        await update.effective_chat.send_message(
+            f"👋 Bem-vindo, {novo_membro.user.first_name}! Prepare-se para participar dos quizzes! 🎯\n"
+            "Use /ranking para ver sua posição e /top10 para ver os melhores da temporada!"
+        )
 
-# === FUNÇÃO DE NÍVEIS ===
-def obter_nivel(pontos):
-    if pontos < 200:
-        return "🎯 Iniciante"
-    elif pontos < 500:
-        return "🔰 Aprendiz"
-    elif pontos < 1000:
-        return "⚡ Competidor"
-    elif pontos < 2000:
-        return "🥈 Avançado"
-    elif pontos < 3500:
-        return "🥇 Mestre"
-    elif pontos < 5000:
-        return "🔥 Lendário"
-    else:
-        return "👑 Imortal"
 
-# === QUIZ AUTOMÁTICO ===
+# === COMANDOS BÁSICOS ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chats_ativos.add(update.effective_chat.id)
+    if user.id not in pontuacoes:
+        pontuacoes[user.id] = {"pontos": PONTOS_INICIAIS, "nivel": 1}
+    await update.message.reply_text(
+        f"🎯 Olá {user.first_name}! Bem-vindo ao QuizBot!\n"
+        "Os quizzes são enviados automaticamente das 7h às 23h a cada 45 minutos."
+    )
+
+
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        await update.message.reply_text("🏆 Ainda não há pontuações registradas.")
+        return
+
+    texto = "📊 *Ranking Atual:*\n\n"
+    for user_id, dados in sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True):
+        texto += f"👤 {user_id} — {dados['pontos']} pontos (Nível {dados['nivel']})\n"
+    await update.message.reply_text(texto, parse_mode="Markdown")
+
+
+async def top10(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        await update.message.reply_text("🏆 Ainda não há jogadores no ranking.")
+        return
+
+    texto = "🏅 *Top 10 Jogadores da Temporada:*\n\n"
+    top = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)[:10]
+    for i, (user_id, dados) in enumerate(top, start=1):
+        medalha = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}️⃣"
+        texto += f"{medalha} {user_id} — {dados['pontos']} pts\n"
+    await update.message.reply_text(texto, parse_mode="Markdown")
+
+
+# === SISTEMA DE QUIZ AUTOMÁTICO ===
 async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
     agora = datetime.now(TIMEZONE)
     if not (HORARIO_INICIO <= agora.hour < HORARIO_FIM):
@@ -79,130 +105,80 @@ async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
     ]
     markup = InlineKeyboardMarkup(keyboard)
 
-    # Dicionário para rastrear a última mensagem de quiz por chat
     if not hasattr(context.bot_data, "ultimos_quizzes"):
         context.bot_data["ultimos_quizzes"] = {}
 
     for chat_id in chats_ativos:
         try:
-            # 🧹 Apagar o quiz anterior se ainda existir
+            # Se houver um quiz anterior, exibe aviso e apaga
             ultimo_id = context.bot_data["ultimos_quizzes"].get(chat_id)
             if ultimo_id:
                 try:
+                    await context.bot.send_message(chat_id, "⏳ Este quiz expirou!")
+                    await asyncio.sleep(3)
                     await context.bot.delete_message(chat_id=chat_id, message_id=ultimo_id)
                 except Exception as e:
-                    print(f"⚠️ Não foi possível apagar quiz anterior em {chat_id}: {e}")
+                    print(f"⚠️ Erro ao apagar quiz anterior: {e}")
 
-            # 🧠 Enviar o novo quiz
             msg = await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"🧠 *{quiz['q']}*",
                 reply_markup=markup,
                 parse_mode="Markdown"
             )
-
-            # 💾 Armazenar o ID da nova mensagem
             context.bot_data["ultimos_quizzes"][chat_id] = msg.message_id
 
         except Exception as e:
-            print(f"Erro ao enviar quiz para {chat_id}: {e}")
+            print(f"Erro ao enviar quiz: {e}")
 
-# === RESPOSTAS DE QUIZ ===
+
+# === RESPOSTAS ===
 async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    resposta_correta, resposta_usuario = query.data.split("|")
-    user_id = str(query.from_user.id)
-    nome = query.from_user.first_name
+    correta, resposta = query.data.split("|")
 
-    if resposta_usuario == resposta_correta:
-        pontos = pontuacoes.get(user_id, {}).get("pontos", PONTOS_INICIAIS)
-        pontos += PONTOS_ACERTO
-        pontuacoes[user_id] = {"nome": nome, "pontos": pontos}
-        salvar_dados(PONTOS_FILE, pontuacoes)
-        nivel = obter_nivel(pontos)
-        await query.edit_message_text(f"✅ Correto, {nome}! Você ganhou {PONTOS_ACERTO} pontos.\n🏅 Novo nível: {nivel}")
+    user = query.from_user
+    if user.id not in pontuacoes:
+        pontuacoes[user.id] = {"pontos": PONTOS_INICIAIS, "nivel": 1}
+
+    if resposta == correta:
+        pontuacoes[user.id]["pontos"] += PONTOS_ACERTO
+        await query.edit_message_text(f"✅ Correto, {user.first_name}! +{PONTOS_ACERTO} pontos.")
     else:
-        await query.edit_message_text(
-            f"❌ Errado, {nome}! A resposta certa era *{resposta_correta}*.",
-            parse_mode="Markdown"
-        )
+        await query.edit_message_text(f"❌ Errou, {user.first_name}! A resposta era: {correta}")
 
-# === COMANDOS ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id not in chats_ativos:
-        chats_ativos.append(chat_id)
-        salvar_dados(CHATS_FILE, chats_ativos)
-    await update.message.reply_text(
-        "🤖 Olá! Eu sou o *QuizBot!* 🎯\n"
-        "A cada 45 minutos tem um novo quiz!\n"
-        "Use /ranking ou /top10 para ver os melhores!\n"
-        "Bons jogos e boa sorte! 🍀",
-        parse_mode="Markdown"
-    )
+    # Atualiza nível
+    pontuacoes[user.id]["nivel"] = pontuacoes[user.id]["pontos"] // 100 + 1
 
-async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not pontuacoes:
-        await update.message.reply_text("📊 Nenhum jogador ainda.")
-        return
 
-    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
-    msg = "🏆 *Ranking Atual:*\n\n"
-    for i, (user_id, dados) in enumerate(ranking[:10], start=1):
-        medalha = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        nivel = obter_nivel(dados["pontos"])
-        msg += f"{medalha} {dados['nome']} — {dados['pontos']} pts ({nivel})\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def top10(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not pontuacoes:
-        await update.message.reply_text("🚀 Ainda não há jogadores no ranking!")
-        return
-
-    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
-    msg = "🔥 *TOP 10 da Semana!*\n\n"
-    for i, (uid, dados) in enumerate(ranking[:10], start=1):
-        emoji = "👑" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "⭐" if i <= 5 else "🎯"
-        nivel = obter_nivel(dados["pontos"])
-        msg += f"{emoji} *{i}. {dados['nome']}* — {dados['pontos']} pts ({nivel})\n"
-    msg += "\n🏁 Continue participando e suba de nível!"
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-# === SISTEMA DE BÔNUS ===
+# === BÔNUS ===
 async def aplicar_bonus_diario(context: ContextTypes.DEFAULT_TYPE):
-    if not pontuacoes:
-        return
-    user = max(pontuacoes.items(), key=lambda x: x[1]["pontos"])
-    pontuacoes[user[0]]["pontos"] += BONUS_DIARIO
-    salvar_dados(PONTOS_FILE, pontuacoes)
-    print(f"🌞 Bônus diário de {BONUS_DIARIO} pontos para {user[1]['nome']}.")
+    if pontuacoes:
+        top_user = max(pontuacoes, key=lambda k: pontuacoes[k]["pontos"])
+        pontuacoes[top_user]["pontos"] += 200
+        print(f"🎁 Bônus diário aplicado a {top_user}!")
+
 
 async def aplicar_bonus_semanal(context: ContextTypes.DEFAULT_TYPE):
-    if not pontuacoes:
-        return
-    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)[:4]
-    for pos, (uid, dados) in enumerate(ranking, start=1):
-        bonus = BONUS_SEMANAL.get(pos, 0)
-        pontuacoes[uid]["pontos"] += bonus
-        print(f"🏅 {dados['nome']} recebeu bônus semanal de {bonus} pontos.")
-    salvar_dados(PONTOS_FILE, pontuacoes)
+    if pontuacoes:
+        top = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)[:4]
+        bonus = [500, 400, 300, 300]
+        for (user_id, _), pontos in zip(top, bonus):
+            pontuacoes[user_id]["pontos"] += pontos
+        print("🏅 Bônus semanal aplicado!")
 
-# === RESET DE TEMPORADA ===
+
 async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
-    if not pontuacoes:
-        return
-    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
-    print("🍂 Reset de temporada — Top 10:")
-    for i, (uid, dados) in enumerate(ranking[:10], start=1):
-        destaque = "⭐" if i <= 3 else ""
-        print(f"{destaque}{i}. {dados['nome']} — {dados['pontos']} pts")
+    if pontuacoes:
+        top = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)[:10]
+        print("🌱 Nova temporada! Top 3:")
+        for i, (user_id, dados) in enumerate(top[:3], start=1):
+            print(f"{i}º - {user_id} ({dados['pontos']} pts)")
     pontuacoes.clear()
-    salvar_dados(PONTOS_FILE, pontuacoes)
 
-# === /ADDQUIZ ===
-PERGUNTA, OPCOES, RESPOSTA = range(3)
 
+# === ADDQUIZ (somente admins) ===
 async def addquiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
@@ -212,53 +188,32 @@ async def addquiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✏️ Envie a *pergunta* do novo quiz:")
     return PERGUNTA
 
+
 async def addquiz_pergunta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["q"] = update.message.text
-    await update.message.reply_text("Agora envie as *opções*, separadas por vírgula (ex: A,B,C,D):")
+    context.user_data["pergunta"] = update.message.text
+    await update.message.reply_text("📋 Agora envie as *opções*, separadas por vírgula (,):")
     return OPCOES
 
+
 async def addquiz_opcoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    opcoes = [x.strip() for x in update.message.text.split(",") if x.strip()]
-    context.user_data["opts"] = opcoes
-    await update.message.reply_text(f"Qual é a *resposta correta*? Escolha uma das opções: {', '.join(opcoes)}")
+    context.user_data["opcoes"] = [x.strip() for x in update.message.text.split(",")]
+    await update.message.reply_text("✅ Qual é a *resposta correta*?")
     return RESPOSTA
 
-async def addquiz_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ans = update.message.text.strip()
-    if ans not in context.user_data["opts"]:
-        await update.message.reply_text("❌ Resposta inválida. Deve ser uma das opções enviadas.")
-        return RESPOSTA
 
-    quiz = {
-        "q": context.user_data["q"],
-        "opts": context.user_data["opts"],
-        "ans": ans
-    }
-    quizzes.append(quiz)
-    salvar_dados(QUIZ_FILE, quizzes)
-    await update.message.reply_text("✅ Novo quiz adicionado com sucesso!")
+async def addquiz_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pergunta = context.user_data["pergunta"]
+    opcoes = context.user_data["opcoes"]
+    resposta = update.message.text.strip()
+    quizzes.append({"q": pergunta, "opts": opcoes, "ans": resposta})
+    await update.message.reply_text("🎉 Quiz adicionado com sucesso!")
     return ConversationHandler.END
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Criação de quiz cancelada.")
+    await update.message.reply_text("❌ A criação do quiz foi cancelada.")
     return ConversationHandler.END
 
-# === BOAS-VINDAS ===
-async def boas_vindas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    member = update.chat_member.new_chat_member
-    if member and not member.user.is_bot:
-        nome = member.user.first_name
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=(
-                f"👋 Bem-vindo(a), *{nome}!* 🎉\n\n"
-                "Sou o *QuizBot!* 🧠\n"
-                "👉 Participe dos quizzes automáticos!\n"
-                "👉 Veja o ranking com /top10\n\n"
-                "Suba de nível e torne-se um *Imortal*! 👑"
-            ),
-            parse_mode="Markdown"
-        )
 
 # === MAIN ===
 async def main():
@@ -269,13 +224,11 @@ async def main():
         .build()
     )
 
-    # Handlers principais
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(CommandHandler("top10", top10))
     app.add_handler(CallbackQueryHandler(resposta_quiz))
 
-    # /addquiz protegido
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("addquiz", addquiz_start)],
         states={
@@ -286,8 +239,6 @@ async def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv_handler)
-
-    # Boas-vindas automáticas
     app.add_handler(ChatMemberHandler(boas_vindas, ChatMemberHandler.CHAT_MEMBER))
 
     # Jobs automáticos
@@ -309,6 +260,6 @@ async def main():
     print("🤖 Bot rodando com quiz, bônus, boas-vindas e /addquiz protegido.")
     await app.run_polling()
 
+
 if __name__ == "__main__":
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
