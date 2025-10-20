@@ -1,10 +1,10 @@
 import asyncio
 import json
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, JobQueue
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 import os
 import pytz
@@ -89,7 +89,10 @@ async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         salvar_dados(PONTOS_FILE, pontuacoes)
         await query.edit_message_text(f"✅ Correto, {nome}! Você ganhou {PONTOS_ACERTO} pontos.")
     else:
-        await query.edit_message_text(f"❌ Errado, {nome}! A resposta certa era *{resposta_correta}*.", parse_mode="Markdown")
+        await query.edit_message_text(
+            f"❌ Errado, {nome}! A resposta certa era *{resposta_correta}*.",
+            parse_mode="Markdown"
+        )
 
 # === COMANDOS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -97,7 +100,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in chats_ativos:
         chats_ativos.append(chat_id)
         salvar_dados(CHATS_FILE, chats_ativos)
-    await update.message.reply_text("🤖 Olá! Você está participando do QuizBot! A cada 45 minutos tem um novo quiz.")
+    await update.message.reply_text(
+        "🤖 Olá! Você está participando do QuizBot!\nA cada 45 minutos tem um novo quiz entre 07h e 23h."
+    )
 
 async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not pontuacoes:
@@ -157,12 +162,10 @@ async def main():
 
     # Jobs automáticos
     app.job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10)
-
-    # ⚡ Correção: usar "time" importado do datetime, não "datetime.time"
     app.job_queue.run_daily(aplicar_bonus_diario, time=time(hour=22, tzinfo=TIMEZONE))
     app.job_queue.run_daily(aplicar_bonus_semanal, time=time(hour=23, tzinfo=TIMEZONE), days=(6,))
     
-    # Reset a cada estação (1º dia de março, junho, setembro, dezembro)
+    # Reset a cada estação (1º de março, junho, setembro e dezembro)
     meses_reset = [3, 6, 9, 12]
     for mes in meses_reset:
         app.job_queue.run_monthly(
