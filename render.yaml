@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: quizada
+    env: python
+    plan: free
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
