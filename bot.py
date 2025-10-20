@@ -3,93 +3,83 @@ import asyncio
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    MessageHandler, 
-    filters, 
-    ContextTypes
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
 )
-from apscheduler.schedulers.background import BackgroundScheduler
+import logging
 
-# 🔧 Configurações principais
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://quizada.onrender.com") + f"/webhook/{TOKEN}"
+# ===============================
+# 🔧 CONFIGURAÇÕES GERAIS
+# ===============================
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))  # 🔒 substitua pelo seu ID real
+WEBHOOK_URL = f"https://quizada.onrender.com/webhook/{TOKEN}"
 
-# ⚙️ Flask app
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# ⚙️ Inicialização do bot (Application)
-application = Application.builder().token(TOKEN).build()
-
-# ------------------------------------------------------
-# 🧠 Handlers principais (comandos e mensagens)
-# ------------------------------------------------------
-
+# ===============================
+# 🧠 HANDLERS DO BOT
+# ===============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎮 Bem-vindo ao Quizada! Prepare-se para o próximo quiz!")
+    await update.message.reply_text(
+        "👋 Olá! Eu sou o Quizada Bot.\nUse /quiz para jogar!"
+    )
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💡 Comandos disponíveis:\n/start - Iniciar o bot\n/help - Mostrar ajuda")
+async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧩 Em breve: quizzes incríveis!")
 
-# Adiciona comandos
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("help", help_command))
+async def add_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Somente o administrador pode adicionar quizzes"""
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        await update.message.reply_text("🚫 Apenas o administrador pode adicionar quizzes.")
+        return
+    await update.message.reply_text("✅ Modo administrador: adicione seu quiz!")
 
-# ------------------------------------------------------
-# 🔄 Sistema de Quiz Automático (exemplo de tarefa APScheduler)
-# ------------------------------------------------------
+# ===============================
+# 🔁 CRIAÇÃO DO APLICATIVO TELEGRAM
+# ===============================
+async def create_app():
+    application = Application.builder().token(TOKEN).build()
 
-def enviar_quiz_automatico():
-    asyncio.run(enviar_mensagem_para_todos("🧩 Um novo quiz começou! Responda rápido!"))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("quiz", quiz))
+    application.add_handler(CommandHandler("addquiz", add_quiz))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, quiz))
 
-async def enviar_mensagem_para_todos(texto):
-    try:
-        # Aqui você pode iterar sobre uma lista de chat_ids se quiser enviar a múltiplos usuários
-        # Exemplo: await application.bot.send_message(chat_id=chat_id, text=texto)
-        print(f"[INFO] Mensagem automática enviada: {texto}")
-    except Exception as e:
-        print(f"[ERRO] Falha ao enviar mensagem automática: {e}")
+    # Remove webhook antigo e configura o novo
+    await application.bot.delete_webhook()
+    await application.bot.set_webhook(url=WEBHOOK_URL)
 
-# Agenda o quiz automático
-scheduler = BackgroundScheduler()
-scheduler.add_job(enviar_quiz_automatico, "interval", minutes=45)
-scheduler.start()
+    logging.info(f"✅ Webhook configurado: {WEBHOOK_URL}")
+    return application
 
-# ------------------------------------------------------
-# 🌐 Webhook Flask route
-# ------------------------------------------------------
+# ===============================
+# 🌐 FLASK (Render mantém vivo)
+# ===============================
+@app.route("/", methods=["GET"])
+def home():
+    return "🤖 Quizada Bot está ativo!"
 
 @app.route(f"/webhook/{TOKEN}", methods=["POST"])
 async def webhook():
-    """Recebe updates do Telegram via webhook"""
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    await application.update_queue.put(update)
-    return "OK", 200
+    data = request.get_json(force=True)
+    update = Update.de_json(data, bot_app.bot)
+    await bot_app.process_update(update)
+    return "ok"
 
-@app.route("/", methods=["GET"])
-def home():
-    return "🤖 Bot Quizada ativo no Render com webhook!"
-
-# ------------------------------------------------------
-# 🚀 Setup do webhook e inicialização
-# ------------------------------------------------------
-
+# ===============================
+# 🚀 INICIALIZAÇÃO PRINCIPAL
+# ===============================
 async def main():
-    # Remove webhooks anteriores (importante para evitar conflitos)
-    await application.bot.delete_webhook(drop_pending_updates=True)
-
-    # Define o novo webhook
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    print(f"[OK] Webhook configurado em: {WEBHOOK_URL}")
-
-    # Inicia o processamento assíncrono das filas de updates
-    await application.start()
-    await application.updater.start_polling()  # opcionalmente pode ser omitido, pois Flask cuida
+    global bot_app
+    bot_app = await create_app()
+    logging.info("🚀 Bot iniciado e aguardando atualizações via webhook.")
 
 if __name__ == "__main__":
-    # Configura o loop de evento
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-
-    # Roda o Flask (Render usa porta definida automaticamente)
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    asyncio.run(main())  # ✅ Correção do warning + execução segura
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
