@@ -23,7 +23,7 @@ PONTOS_INICIAIS = 50
 
 # === ADMINISTRAÇÃO ===
 ADMIN_IDS = [
-    123456789,  # 🔹 Substitua pelo seu ID do Telegram
+    8126443922,  # 🔹 Substitua pelo seu ID do Telegram
 ]
 
 # === ARQUIVOS ===
@@ -79,17 +79,35 @@ async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
     ]
     markup = InlineKeyboardMarkup(keyboard)
 
+    # Dicionário para rastrear a última mensagem de quiz por chat
+    if not hasattr(context.bot_data, "ultimos_quizzes"):
+        context.bot_data["ultimos_quizzes"] = {}
+
     for chat_id in chats_ativos:
         try:
-            await context.bot.send_message(
+            # 🧹 Apagar o quiz anterior se ainda existir
+            ultimo_id = context.bot_data["ultimos_quizzes"].get(chat_id)
+            if ultimo_id:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=ultimo_id)
+                except Exception as e:
+                    print(f"⚠️ Não foi possível apagar quiz anterior em {chat_id}: {e}")
+
+            # 🧠 Enviar o novo quiz
+            msg = await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"🧠 *{quiz['q']}*",
                 reply_markup=markup,
                 parse_mode="Markdown"
             )
+
+            # 💾 Armazenar o ID da nova mensagem
+            context.bot_data["ultimos_quizzes"][chat_id] = msg.message_id
+
         except Exception as e:
             print(f"Erro ao enviar quiz para {chat_id}: {e}")
 
+# === RESPOSTAS DE QUIZ ===
 async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -137,7 +155,6 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"{medalha} {dados['nome']} — {dados['pontos']} pts ({nivel})\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# === /TOP10 ===
 async def top10(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not pontuacoes:
         await update.message.reply_text("🚀 Ainda não há jogadores no ranking!")
@@ -146,16 +163,7 @@ async def top10(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
     msg = "🔥 *TOP 10 da Semana!*\n\n"
     for i, (uid, dados) in enumerate(ranking[:10], start=1):
-        if i == 1:
-            emoji = "👑"
-        elif i == 2:
-            emoji = "🥈"
-        elif i == 3:
-            emoji = "🥉"
-        elif i <= 5:
-            emoji = "⭐"
-        else:
-            emoji = "🎯"
+        emoji = "👑" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "⭐" if i <= 5 else "🎯"
         nivel = obter_nivel(dados["pontos"])
         msg += f"{emoji} *{i}. {dados['nome']}* — {dados['pontos']} pts ({nivel})\n"
     msg += "\n🏁 Continue participando e suba de nível!"
@@ -298,8 +306,9 @@ async def main():
         days=(1,),
     )
 
-    print("🤖 Bot ativo com sistema de níveis, ranking e quiz automático!")
-    await app.run_polling(close_loop=False)
+    print("🤖 Bot rodando com quiz, bônus, boas-vindas e /addquiz protegido.")
+    await app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(main())
