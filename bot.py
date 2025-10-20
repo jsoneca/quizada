@@ -5,17 +5,15 @@ import random
 from datetime import datetime
 from threading import Thread
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Poll
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes
+    ApplicationBuilder, CommandHandler, ContextTypes
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
 # =========================================================
-# 🔐 TOKEN DO BOT
-# (usando variável de ambiente do Render)
+# 🔐 TOKEN DO BOT (usando variável de ambiente no Render)
 TOKEN = os.getenv("BOT_TOKEN")
 
 # =========================================================
@@ -43,9 +41,8 @@ pontuacoes = carregar_json(PONTOS_FILE, {})
 mensagens_quiz = {}
 
 # =========================================================
-# 🧠 FUNÇÕES DO QUIZ
+# 🧩 FUNÇÃO QUIZ COM FORMATO OFICIAL DO TELEGRAM
 async def enviar_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Envia um quiz aleatório e remove o anterior."""
     chat_id = update.effective_chat.id
 
     # Apaga quiz anterior
@@ -64,38 +61,25 @@ async def enviar_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     opcoes = quiz["opcoes"]
     correta = quiz["correta"]
 
-    botoes = [
-        [InlineKeyboardButton(text=o, callback_data=f"quiz|{correta}|{o}")]
-        for o in opcoes
-    ]
-    markup = InlineKeyboardMarkup(botoes)
+    if correta not in opcoes:
+        await update.message.reply_text("⚠️ Erro no quiz: resposta correta não está nas opções.")
+        return
 
-    msg = await update.message.reply_text(f"🧩 {pergunta}", reply_markup=markup)
+    indice_correta = opcoes.index(correta)
+
+    msg = await context.bot.send_poll(
+        chat_id=chat_id,
+        question=f"🧩 {pergunta}",
+        options=opcoes,
+        type=Poll.QUIZ,
+        correct_option_id=indice_correta,
+        is_anonymous=False
+    )
+
     mensagens_quiz[chat_id] = msg.message_id
 
-async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Verifica a resposta e atualiza pontuação."""
-    query = update.callback_query
-    await query.answer()
-    _, correta, escolha = query.data.split("|")
-
-    user_id = str(query.from_user.id)
-    nome = query.from_user.first_name
-
-    if user_id not in pontuacoes:
-        pontuacoes[user_id] = {"nome": nome, "pontos": 0}
-
-    if escolha == correta:
-        pontuacoes[user_id]["pontos"] += 10
-        texto = f"✅ Correto, {nome}! +10 pontos."
-    else:
-        texto = f"❌ Errado, {nome}. A resposta certa era: {correta}"
-
-    salvar_json(PONTOS_FILE, pontuacoes)
-    await query.edit_message_text(texto)
-
 # =========================================================
-# 🏆 COMANDOS DE PONTUAÇÃO
+# 🏆 PONTUAÇÕES
 async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not pontuacoes:
         await update.message.reply_text("📊 Ninguém pontuou ainda!")
@@ -110,7 +94,6 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(texto, parse_mode="Markdown")
 
 async def bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dá bônus diário de 20 pontos."""
     user_id = str(update.effective_user.id)
     nome = update.effective_user.first_name
 
@@ -120,6 +103,32 @@ async def bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pontuacoes[user_id]["pontos"] += 20
     salvar_json(PONTOS_FILE, pontuacoes)
     await update.message.reply_text(f"🎁 {nome}, você ganhou +20 pontos de bônus!")
+
+# =========================================================
+# 📊 ATUALIZAÇÃO DE PONTOS AUTOMÁTICA APÓS QUIZ
+async def processar_resultado(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Detecta respostas corretas e soma pontos automaticamente."""
+    poll_answer = update.poll_answer
+    user_id = str(poll_answer.user.id)
+    nome = poll_answer.user.first_name
+
+    # Verifica se o quiz é conhecido
+    poll_id = poll_answer.poll_id
+    poll_data = context.bot_data.get(poll_id)
+    if not poll_data:
+        return
+
+    correta = poll_data["correta"]
+    respostas = poll_answer.option_ids
+    if not respostas:
+        return
+
+    if respostas[0] == correta:
+        if user_id not in pontuacoes:
+            pontuacoes[user_id] = {"nome": nome, "pontos": 0}
+        pontuacoes[user_id]["pontos"] += 10
+        salvar_json(PONTOS_FILE, pontuacoes)
+        print(f"✅ {nome} acertou o quiz! (+10 pts)")
 
 # =========================================================
 # 🌦 ESTAÇÕES (pontuação reinicia a cada estação)
@@ -143,7 +152,7 @@ def resetar_temporada():
     print("🔄 Pontuações resetadas para nova temporada!")
 
 # =========================================================
-# 🌐 FLASK WEB SERVICE (para Render)
+# 🌐 FLASK WEB SERVICE (Render)
 web_app = Flask(__name__)
 
 @web_app.route("/")
@@ -163,7 +172,11 @@ async def main():
     app.add_handler(CommandHandler("quiz", enviar_quiz))
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(CommandHandler("bonus", bonus))
-    app.add_handler(CallbackQueryHandler(resposta_quiz, pattern=r"^quiz\|"))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("👋 Olá! Use /quiz para jogar!")))
+
+    # Recebe respostas dos quizzes (Polls)
+    app.add_handler(CommandHandler("poll_answer", processar_resultado))
+    app.add_handler(CommandHandler("poll", processar_resultado))
 
     # Scheduler das estações
     scheduler = AsyncIOScheduler()
@@ -172,7 +185,7 @@ async def main():
     scheduler.add_job(resetar_temporada, trigger=DateTrigger(run_date=prox))
     scheduler.start()
 
-    print("🤖 Bot rodando com quiz, bônus, estações e limpeza automática.")
+    print("🤖 Bot rodando com quiz (modo oficial), bônus, estações e limpeza automática.")
     await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
