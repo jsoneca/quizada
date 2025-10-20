@@ -11,18 +11,26 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
+import logging
 
-TOKEN = os.getenv("BOT_TOKEN")  # defina no Render
+# === CONFIGURAÇÕES GERAIS ===
+TOKEN = os.getenv("BOT_TOKEN")
 DB = "quizbot.db"
-
-# === Configurações ===
 QUIZ_INTERVALO = 45 * 60  # 45 minutos
 HORARIO_INICIO = 7
 HORARIO_FIM = 23
 PONTOS_ACERTO = 35
 BONUS_SEMANAIS = [500, 400, 300, 300]
 
-# === Banco de dados ===
+# === LOGGING ===
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO,
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+# === BANCO DE DADOS ===
 def init_db():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -36,6 +44,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    logger.info("📦 Banco de dados inicializado com sucesso.")
 
 def add_pontos(user_id, nome, pontos):
     conn = sqlite3.connect(DB)
@@ -54,6 +63,7 @@ def add_pontos(user_id, nome, pontos):
         )
     conn.commit()
     conn.close()
+    logger.info(f"🏅 {nome} recebeu {pontos} pontos (Total atualizado).")
 
 def get_ranking():
     conn = sqlite3.connect(DB)
@@ -63,25 +73,32 @@ def get_ranking():
     conn.close()
     return ranking
 
-# === Carregar quizzes ===
+# === QUIZZES ===
 def load_quizzes():
     try:
         with open("quizzes.json", "r", encoding="utf-8") as f:
-            return json.load(f)
+            quizzes = json.load(f)
+            logger.info(f"✅ {len(quizzes)} quizzes carregados com sucesso.")
+            return quizzes
     except Exception as e:
-        print("Erro ao carregar quizzes:", e)
+        logger.error(f"Erro ao carregar quizzes: {e}")
         return []
 
 QUIZZES = load_quizzes()
 
-# === Funções do bot ===
+# === FUNÇÕES DO BOT ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎯 Bem-vindo ao QuizBot! Use /join para participar e /ranking para ver o ranking!")
+    logger.info(f"👋 Novo usuário iniciou o bot: {update.effective_user.first_name}")
 
 async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_pontos(user.id, user.first_name, 0)
+    if "participantes" not in context.bot_data:
+        context.bot_data["participantes"] = set()
+    context.bot_data["participantes"].add(user.id)
     await update.message.reply_text(f"{user.first_name}, você entrou no quiz! Boa sorte!")
+    logger.info(f"✅ {user.first_name} entrou na lista de participantes.")
 
 async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ranking = get_ranking()
@@ -89,26 +106,33 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, (nome, pontos) in enumerate(ranking, 1):
         msg += f"{i}. {nome} — {pontos} pts\n"
     await update.message.reply_text(msg)
+    logger.info(f"📊 Ranking solicitado por {update.effective_user.first_name}")
 
-# === Sistema de quiz ===
+# === ENVIO DE QUIZZES ===
 async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
     agora = datetime.now()
     if not (HORARIO_INICIO <= agora.hour < HORARIO_FIM):
+        logger.info("⏰ Fora do horário permitido. Nenhum quiz enviado.")
+        return
+
+    if "participantes" not in context.bot_data or not context.bot_data["participantes"]:
+        logger.info("⚠️ Nenhum participante ativo. Quiz não enviado.")
         return
 
     quiz = random.choice(QUIZZES)
-    keyboard = [
-        [InlineKeyboardButton(opt, callback_data=opt)] for opt in quiz["opts"]
-    ]
+    keyboard = [[InlineKeyboardButton(opt, callback_data=opt)] for opt in quiz["opts"]]
     markup = InlineKeyboardMarkup(keyboard)
 
-    for chat_id in context.bot_data.get("participantes", []):
+    context.bot_data["quiz_atual"] = quiz
+    logger.info(f"🧠 Novo quiz enviado: {quiz['q']}")
+
+    for chat_id in context.bot_data["participantes"]:
         try:
             await context.bot.send_message(chat_id, quiz["q"], reply_markup=markup)
-            context.bot_data["quiz_atual"] = quiz
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Erro ao enviar quiz para {chat_id}: {e}")
 
+# === RESPOSTAS ===
 async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -119,11 +143,14 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if quiz_atual and resposta == quiz_atual["ans"]:
         add_pontos(user.id, user.first_name, PONTOS_ACERTO)
         await query.edit_message_text(f"✅ Correto! +{PONTOS_ACERTO} pontos para {user.first_name}!")
+        logger.info(f"🎯 {user.first_name} acertou a resposta!")
     else:
         await query.edit_message_text("❌ Errado!")
+        logger.info(f"❌ {user.first_name} errou a resposta.")
 
-# === Rotina principal ===
+# === ROTINA PRINCIPAL ===
 async def main():
+    logger.info("🚀 Iniciando o QuizBot...")
     app = ApplicationBuilder().token(TOKEN).build()
     init_db()
 
@@ -132,9 +159,11 @@ async def main():
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(CallbackQueryHandler(responder))
 
-    app.job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10)
+    # Inicializar o JobQueue manualmente
+    jq = app.job_queue
+    jq.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10)
+    logger.info("📆 Agendamento de quizzes configurado a cada 45 minutos (07h–23h).")
 
-    print("🤖 Bot rodando com sistema de temporadas e bônus...")
     await app.run_polling()
 
 if __name__ == "__main__":
