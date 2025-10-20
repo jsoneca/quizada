@@ -1,11 +1,11 @@
 import asyncio
 import json
 import random
-from datetime import datetime, timedelta, time
+from datetime import datetime, time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes, ConversationHandler
+    MessageHandler, filters, ContextTypes, ConversationHandler, ChatMemberHandler
 )
 import os
 import pytz
@@ -20,6 +20,12 @@ PONTOS_ACERTO = 35
 BONUS_DIARIO = 200
 BONUS_SEMANAL = {1: 500, 2: 400, 3: 300, 4: 300}
 PONTOS_INICIAIS = 50
+
+# === ADMINISTRAÇÃO ===
+# IDs autorizados a usar /addquiz
+ADMIN_IDS = [
+    8126443922,  # 🔹 Substitua pelo seu ID do Telegram
+]
 
 # === ARQUIVOS ===
 QUIZ_FILE = "quizzes.json"
@@ -94,9 +100,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chats_ativos.append(chat_id)
         salvar_dados(CHATS_FILE, chats_ativos)
     await update.message.reply_text(
-        "🤖 Olá! Você está participando do *QuizBot!* 🎯\n"
+        "🤖 Olá! Eu sou o *QuizBot!* 🎯\n"
         "A cada 45 minutos tem um novo quiz!\n"
-        "Use /ranking para ver o placar atual.",
+        "Use /ranking para ver o placar atual.\n"
+        "Bons jogos e boa sorte! 🍀",
         parse_mode="Markdown"
     )
 
@@ -147,18 +154,23 @@ async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
 PERGUNTA, OPCOES, RESPOSTA = range(3)
 
 async def addquiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 Você não tem permissão para adicionar quizzes.")
+        return ConversationHandler.END
+
     await update.message.reply_text("✏️ Envie a *pergunta* do novo quiz:")
     return PERGUNTA
 
 async def addquiz_pergunta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["q"] = update.message.text
-    await update.message.reply_text("Agora envie as *opções de resposta*, separadas por vírgula (ex: A,B,C,D):")
+    await update.message.reply_text("Agora envie as *opções*, separadas por vírgula (ex: A,B,C,D):")
     return OPCOES
 
 async def addquiz_opcoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     opcoes = [x.strip() for x in update.message.text.split(",") if x.strip()]
     context.user_data["opts"] = opcoes
-    await update.message.reply_text(f"Qual é a *resposta correta*?\nEscolha uma das opções: {', '.join(opcoes)}")
+    await update.message.reply_text(f"Qual é a *resposta correta*? Escolha uma das opções: {', '.join(opcoes)}")
     return RESPOSTA
 
 async def addquiz_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,6 +193,23 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Criação de quiz cancelada.")
     return ConversationHandler.END
 
+# === BOAS-VINDAS ===
+async def boas_vindas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    member = update.chat_member.new_chat_member
+    if member and not member.user.is_bot:
+        nome = member.user.first_name
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=(
+                f"👋 Bem-vindo(a), *{nome}!* 🎉\n\n"
+                "Sou o *QuizBot!* 🧠\n"
+                "👉 Participe dos quizzes automáticos!\n"
+                "👉 Veja o ranking com /ranking\n\n"
+                "Divirta-se e boa sorte! 🍀"
+            ),
+            parse_mode="Markdown"
+        )
+
 # === MAIN ===
 async def main():
     app = (
@@ -195,7 +224,7 @@ async def main():
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(CallbackQueryHandler(resposta_quiz))
 
-    # /addquiz handler (modo conversa)
+    # /addquiz protegido
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("addquiz", addquiz_start)],
         states={
@@ -207,18 +236,27 @@ async def main():
     )
     app.add_handler(conv_handler)
 
+    # Boas-vindas automáticas
+    app.add_handler(ChatMemberHandler(boas_vindas, ChatMemberHandler.CHAT_MEMBER))
+
     # Jobs automáticos
     app.job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10)
     app.job_queue.run_daily(aplicar_bonus_diario, time=time(hour=22, tzinfo=TIMEZONE))
     app.job_queue.run_daily(aplicar_bonus_semanal, time=time(hour=23, tzinfo=TIMEZONE), days=(6,))
-    app.job_queue.run_monthly(
-        resetar_temporada,
-        when=time(hour=23, tzinfo=TIMEZONE),
-        day=1,
-        months=3
+
+    # Reset de temporada controlado manualmente
+    async def verificar_reset_temporada(context: ContextTypes.DEFAULT_TYPE):
+        mes_atual = datetime.now(TIMEZONE).month
+        if mes_atual in [3, 6, 9, 12]:
+            await resetar_temporada(context)
+
+    app.job_queue.run_daily(
+        verificar_reset_temporada,
+        time=time(hour=23, tzinfo=TIMEZONE),
+        days=(1,),
     )
 
-    print("🤖 Bot rodando com sistema de quizzes, bônus e /addquiz ativo.")
+    print("🤖 Bot rodando com quiz, bônus, boas-vindas e /addquiz protegido.")
     await app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
