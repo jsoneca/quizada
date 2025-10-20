@@ -2,28 +2,27 @@ import os
 import json
 import random
 import asyncio
-from datetime import datetime, timedelta
-from threading import Thread
+from datetime import datetime
 from flask import Flask
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes,
+    ApplicationBuilder, CommandHandler, ContextTypes
 )
 from telegram.constants import ParseMode
 
 # ======================================================
 # 🔹 CONFIGURAÇÕES
 # ======================================================
-TOKEN = os.getenv("BOT_TOKEN")  # Token configurado no Render
+TOKEN = os.getenv("BOT_TOKEN")  # Definido no Render
 PONTUACOES_FILE = "pontuacoes.json"
 QUIZZES_FILE = "quizzes.json"
 
-# Flask para manter o serviço ativo no Render
+# Flask para manter o serviço ativo
 web_app = Flask(__name__)
 
 @web_app.route("/")
 def home():
-    return "🤖 Bot de Quiz está rodando!"
+    return "🤖 Bot de Quiz ativo no Render!"
 
 # ======================================================
 # 🔹 FUNÇÕES DE ARQUIVOS
@@ -57,7 +56,7 @@ async def enviar_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Nenhum quiz disponível.")
         return
 
-    # Deleta o quiz anterior (limpeza do chat)
+    # Limpa o quiz anterior
     if update.effective_chat.id in ultimo_quiz:
         try:
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=ultimo_quiz[update.effective_chat.id])
@@ -75,13 +74,13 @@ async def enviar_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         type="quiz",
         correct_option_id=resposta_certa,
         is_anonymous=False,
-        explanation=f"✅ Resposta correta: {opcoes[resposta_certa]}",
+        explanation=f"✅ Resposta correta: {opcoes[resposta_certa]}"
     )
 
     ultimo_quiz[update.effective_chat.id] = msg.message_id
 
 # ======================================================
-# 🔹 COMANDOS DE USUÁRIO
+# 🔹 COMANDOS
 # ======================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎯 Bem-vindo ao Quiz! Use /quiz para começar.")
@@ -102,7 +101,7 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(ranking_texto, parse_mode=ParseMode.MARKDOWN)
 
 # ======================================================
-# 🔹 ESTAÇÕES E RESET DE TEMPORADA
+# 🔹 ESTAÇÕES E RESET
 # ======================================================
 def obter_estacao():
     mes = datetime.now().month
@@ -122,41 +121,31 @@ async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
     print("🔄 Temporada resetada!")
 
 # ======================================================
-# 🔹 LOOP PRINCIPAL
+# 🔹 EXECUÇÃO DO BOT E FLASK NO MESMO LOOP
 # ======================================================
-async def main():
+async def iniciar_bot():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Comandos
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("quiz", quiz))
     app.add_handler(CommandHandler("ranking", ranking))
 
-    # Agendamentos das estações
+    # Agendar resets das temporadas
     job_queue = app.job_queue
-    datas_reset = [
-        datetime(datetime.now().year, 3, 1),
-        datetime(datetime.now().year, 6, 1),
-        datetime(datetime.now().year, 9, 1),
-        datetime(datetime.now().year, 12, 1),
-    ]
-    for data in datas_reset:
+    for mes in [3, 6, 9, 12]:
+        data = datetime(datetime.now().year, mes, 1)
         job_queue.run_once(resetar_temporada, when=data)
 
-    print("🤖 Bot rodando com quiz, bônus, estações e limpeza automática.")
+    print("🤖 Bot de Quiz iniciado com sucesso!")
     await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 # ======================================================
-# 🔹 EXECUÇÃO (modo Render Web Service)
+# 🔹 INICIALIZAÇÃO (Render Web Service)
 # ======================================================
 if __name__ == "__main__":
-    def iniciar_bot():
-        asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(iniciar_bot())
 
-    bot_thread = Thread(target=iniciar_bot)
-    bot_thread.start()
-
-    # Mantém o Flask ativo para o Render detectar porta aberta
     port = int(os.environ.get("PORT", 10000))
     print(f"🌐 Flask ativo em http://0.0.0.0:{port}")
     web_app.run(host="0.0.0.0", port=port)
