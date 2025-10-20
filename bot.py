@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 import os
 
 # --- CONFIGURAÇÕES ---
-TOKEN = os.getenv("BOT_TOKEN")  # Pegando o token do Render
+TOKEN = os.getenv("BOT_TOKEN")  # token salvo nas variáveis de ambiente do Render
 QUIZ_FILE = "quizzes.json"
 PONTUACOES_FILE = "pontuacoes.json"
 
@@ -35,6 +35,7 @@ def salvar_pontuacoes(pontuacoes):
     with open(PONTUACOES_FILE, "w", encoding="utf-8") as f:
         json.dump(pontuacoes, f, indent=4, ensure_ascii=False)
 
+# --- ENVIO AUTOMÁTICO DE QUIZZES ---
 async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
     chats = context.job.data["chats"]
     quizzes = carregar_quizzes()
@@ -42,16 +43,17 @@ async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
 
     for chat_id in chats:
         try:
-            # Limpa quiz anterior, se existir
+            # Limpa quiz anterior se existir
             if "mensagem_quiz" in context.chat_data:
                 try:
                     await context.bot.delete_message(chat_id=chat_id, message_id=context.chat_data["mensagem_quiz"])
                 except:
                     pass
 
-            opcoes = quiz["opcoes"]
-            botoes = [[InlineKeyboardButton(opcao, callback_data=f"quiz|{quiz['correta']}|{opcao}")]
-                      for opcao in opcoes]
+            botoes = [
+                [InlineKeyboardButton(opcao, callback_data=f"quiz|{quiz['correta']}|{opcao}")]
+                for opcao in quiz["opcoes"]
+            ]
             reply_markup = InlineKeyboardMarkup(botoes)
 
             msg = await context.bot.send_message(
@@ -60,21 +62,23 @@ async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
+
             context.chat_data["mensagem_quiz"] = msg.message_id
 
         except Exception as e:
             print(f"Erro ao enviar quiz: {e}")
 
-# --- HANDLERS ---
+# --- COMANDOS ---
 async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎉 Olá! Bem-vindo(a) ao Quiz!\n\n"
-        "Use /entrar para participar da pontuação e competir nos quizzes automáticos!"
+        "Use /entrar para participar do ranking e competir nos quizzes automáticos!"
     )
 
 async def entrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     pontuacoes = carregar_pontuacoes()
+
     if str(user.id) not in pontuacoes:
         pontuacoes[str(user.id)] = {"nome": user.first_name, "pontos": 0}
         salvar_pontuacoes(pontuacoes)
@@ -114,19 +118,29 @@ async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-# --- LOOP PRINCIPAL DO BOT ---
+# --- MAIN ---
 async def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    # 🔧 Cria aplicação e ativa JobQueue
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .post_init(lambda app: setattr(app, 'job_queue', app.job_queue or app.create_job_queue()))
+        .build()
+    )
 
     app.add_handler(CommandHandler("iniciar", iniciar))
     app.add_handler(CommandHandler("entrar", entrar))
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(CallbackQueryHandler(resposta_quiz, pattern="^quiz\\|"))
 
-    # IDs dos grupos/chats para enviar quizzes automáticos
-    chats = []  # insira aqui manualmente se quiser testes diretos
+    chats = []  # adicione aqui os IDs de grupos/chat
 
+    # ✅ Inicializa manualmente a JobQueue
     job_queue = app.job_queue
+    if job_queue is None:
+        job_queue = app.create_job_queue()
+        app.job_queue = job_queue
+
     job_queue.run_repeating(enviar_quiz, interval=45 * 60, first=10, data={"chats": chats})
 
     print("🤖 Bot do Quiz rodando normalmente (Render Web Service)!")
