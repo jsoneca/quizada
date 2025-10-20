@@ -17,7 +17,7 @@ from telegram.ext import (
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
 # ⚙️ Configurações principais
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 QUIZ_INTERVALO = 45 * 60  # 45 minutos
