@@ -1,149 +1,122 @@
 import asyncio
 import json
+import os
 import random
 import threading
 from datetime import datetime
 from flask import Flask
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes,
-    CallbackQueryHandler
+    ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
 )
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# 🔑 Token do seu bot
-TOKEN = "COLOQUE_SEU_TOKEN_AQUI"
+TOKEN = os.getenv("BOT_TOKEN")
 
-# 📂 Caminhos dos arquivos
-QUIZ_FILE = "quizzes.json"
+QUIZZES_FILE = "quizzes.json"
 PONTUACOES_FILE = "pontuacoes.json"
 
-# 🌐 Flask (Render exige uma porta aberta)
-app = Flask(__name__)
+# --- Utilidades ---
+def carregar_dados(arquivo, padrao):
+    if not os.path.exists(arquivo):
+        with open(arquivo, "w") as f:
+            json.dump(padrao, f)
+    with open(arquivo, "r") as f:
+        return json.load(f)
 
-@app.route("/")
-def home():
-    return "🤖 Bot ativo e rodando!"
+def salvar_dados(arquivo, dados):
+    with open(arquivo, "w") as f:
+        json.dump(dados, f, indent=4)
 
-# 🧮 Funções auxiliares
-def carregar_pontuacoes():
-    try:
-        with open(PONTUACOES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
+# --- Comandos ---
+async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Olá! Eu sou o Quizada!\n\n"
+        "Use /entrar para participar dos quizzes e competir com outros jogadores 🎮"
+    )
 
-def salvar_pontuacoes(pontuacoes):
-    with open(PONTUACOES_FILE, "w", encoding="utf-8") as f:
-        json.dump(pontuacoes, f, ensure_ascii=False, indent=2)
+async def entrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    user = update.effective_user
+    pontuacoes = carregar_dados(PONTUACOES_FILE, {})
 
-def carregar_quizzes():
-    try:
-        with open(QUIZ_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
+    if chat_id not in pontuacoes:
+        pontuacoes[chat_id] = {"usuarios": {}, "nome_grupo": update.effective_chat.title}
 
-# 🧩 Enviar quiz automaticamente
+    if str(user.id) not in pontuacoes[chat_id]["usuarios"]:
+        pontuacoes[chat_id]["usuarios"][str(user.id)] = {"nome": user.first_name, "pontos": 0}
+        salvar_dados(PONTUACOES_FILE, pontuacoes)
+        await update.message.reply_text(f"✅ {user.first_name}, você entrou no ranking deste grupo!")
+    else:
+        await update.message.reply_text("⚠️ Você já está participando!")
+
+# --- Envio de quizzes automáticos ---
 async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
-    chats = context.job.data.get("chats", [])
-    quizzes = carregar_quizzes()
+    pontuacoes = carregar_dados(PONTUACOES_FILE, {})
+    quizzes = carregar_dados(QUIZZES_FILE, [])
 
-    if not quizzes or not chats:
+    if not quizzes or not pontuacoes:
         return
 
     quiz = random.choice(quizzes)
     pergunta = quiz["pergunta"]
     opcoes = quiz["opcoes"]
-    resposta_correta = quiz["resposta"]
+    correta = quiz["correta"]
 
-    keyboard = [
-        [InlineKeyboardButton(text=opcao, callback_data=f"quiz|{opcao}|{resposta_correta}")]
-        for opcao in opcoes
-    ]
+    for chat_id in pontuacoes.keys():
+        try:
+            await context.bot.send_poll(
+                chat_id=int(chat_id),
+                question=f"🧩 Quiz:\n\n{pergunta}",
+                options=opcoes,
+                type="quiz",
+                correct_option_id=correta,
+                is_anonymous=False
+            )
+        except Exception as e:
+            print(f"Erro ao enviar quiz para {chat_id}: {e}")
 
-    for chat_id in chats:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"🧠 *Quiz:*\n\n{pergunta}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+# --- Reset de temporada ---
+async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
+    pontuacoes = carregar_dados(PONTUACOES_FILE, {})
+    for chat_id in pontuacoes.keys():
+        try:
+            await context.bot.send_message(chat_id=int(chat_id), text="🌸 Nova temporada iniciada! Pontuações zeradas!")
+        except Exception:
+            pass
+    salvar_dados(PONTUACOES_FILE, {})
 
-# 🧍‍♂️ Entrar no ranking
-async def entrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    pontuacoes = carregar_pontuacoes()
-
-    if str(user.id) in pontuacoes:
-        await update.message.reply_text("✅ Você já está participando do ranking!")
-    else:
-        pontuacoes[str(user.id)] = {"nome": user.first_name, "pontos": 0}
-        salvar_pontuacoes(pontuacoes)
-        await update.message.reply_text("🎉 Você entrou para o ranking de pontuações!")
-
-# 🏁 Iniciar o bot
-async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Olá! Eu sou o *QuizadA Bot!* 🧩\n\n"
-        "Fique ligado — quizzes serão enviados automaticamente a cada 45 minutos!",
-        parse_mode="Markdown"
-    )
-
-# 🏅 Ver pontuação
-async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pontuacoes = carregar_pontuacoes()
-    if not pontuacoes:
-        await update.message.reply_text("📊 Ainda não há pontuações registradas.")
-        return
-
-    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
-    msg = "🏆 *Ranking Atual:*\n\n"
-    for i, (user_id, dados) in enumerate(ranking[:10], start=1):
-        msg += f"{i}. {dados['nome']} — {dados['pontos']} pontos\n"
-
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-# 🎯 Resposta ao quiz
-async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    _, resposta_usuario, resposta_correta = query.data.split("|")
-
-    pontuacoes = carregar_pontuacoes()
-    user = query.from_user
-
-    if resposta_usuario == resposta_correta:
-        pontos = pontuacoes.get(str(user.id), {"nome": user.first_name, "pontos": 0})
-        pontos["pontos"] += 10
-        pontuacoes[str(user.id)] = pontos
-        salvar_pontuacoes(pontuacoes)
-        await query.answer("✅ Resposta certa! +10 pontos!")
-    else:
-        await query.answer("❌ Resposta errada!")
-
-# 🚀 Loop principal do bot
+# --- Setup principal ---
 async def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # Comandos
     application.add_handler(CommandHandler("iniciar", iniciar))
     application.add_handler(CommandHandler("entrar", entrar))
-    application.add_handler(CommandHandler("ranking", ranking))
-    application.add_handler(CallbackQueryHandler(resposta_quiz, pattern="^quiz"))
 
-    # Agendamento automático
-    scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
-    chats = [-1000000000000]  # coloque o ID do grupo aqui
-    scheduler.add_job(enviar_quiz, "interval", minutes=45, args=[application.bot.create_task_context()], kwargs={"job": type("obj", (), {"data": {"chats": chats}})})
-    scheduler.start()
+    job_queue: JobQueue = application.job_queue
 
-    print("🤖 Bot rodando com python-telegram-bot 20.3 e Flask.")
+    # Envia quizzes a cada 45 minutos
+    job_queue.run_repeating(enviar_quiz, interval=45*60, first=10)
+
+    # Reseta a cada 3 meses
+    datas_reset = ["2025-03-01", "2025-06-01", "2025-09-01", "2025-12-01"]
+    for data in datas_reset:
+        dt = datetime.strptime(data, "%Y-%m-%d")
+        job_queue.run_once(resetar_temporada, when=dt)
+
+    print("🤖 Bot rodando com sucesso (Python 3.13 + PTB 21.4)")
     await application.run_polling()
 
-# 🔄 Thread para rodar o bot e o Flask juntos
+# --- Flask (para manter serviço vivo no Render) ---
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "✅ Quizada rodando no Render (Python 3.13)"
+
 def iniciar_bot():
     asyncio.run(main())
 
 if __name__ == "__main__":
-    threading.Thread(target=iniciar_bot).start()
-    app.run(host="0.0.0.0", port=10000)
+    t = threading.Thread(target=iniciar_bot)
+    t.start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
