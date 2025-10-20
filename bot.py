@@ -1,125 +1,223 @@
-import asyncio
 import json
-import os
 import random
+import asyncio
+import threading
 from datetime import datetime
 from flask import Flask
-from telegram import Update
+from telegram import Update, Poll
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    PollAnswerHandler,
+    ContextTypes,
 )
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import os
 
+# ==============================
+# CONFIGURAÇÕES
+# ==============================
 TOKEN = os.getenv("BOT_TOKEN")
 
-QUIZZES_FILE = "quizzes.json"
 PONTUACOES_FILE = "pontuacoes.json"
+QUIZZES_FILE = "quizzes.json"
+TEMPORADA_FILE = "temporada_atual.json"
 
-# --- Utilidades ---
-def carregar_dados(arquivo, padrao):
-    if not os.path.exists(arquivo):
-        with open(arquivo, "w") as f:
-            json.dump(padrao, f)
-    with open(arquivo, "r") as f:
+app_flask = Flask(__name__)
+
+# ==============================
+# FUNÇÕES DE ARQUIVOS
+# ==============================
+def carregar_arquivo(caminho, padrao):
+    if not os.path.exists(caminho):
+        salvar_arquivo(caminho, padrao)
+    with open(caminho, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def salvar_dados(arquivo, dados):
-    with open(arquivo, "w") as f:
-        json.dump(dados, f, indent=4)
 
-# --- Comandos ---
+def salvar_arquivo(caminho, conteudo):
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(conteudo, f, indent=4, ensure_ascii=False)
+
+
+# ==============================
+# DADOS INICIAIS
+# ==============================
+pontuacoes = carregar_arquivo(PONTUACOES_FILE, {})
+quizzes = carregar_arquivo(QUIZZES_FILE, [])
+temporada = carregar_arquivo(TEMPORADA_FILE, {"estacao": "🌸 Primavera"})
+
+# ==============================
+# FUNÇÕES DO BOT
+# ==============================
 async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Olá! Eu sou o Quizada!\n\n"
-        "Use /entrar para participar dos quizzes e competir com outros jogadores 🎮"
+        "🌟 Olá! Sou o Quizada!\n"
+        "Use /entrar para participar do ranking.\n"
+        "Os quizzes são postados automaticamente a cada 45 minutos!"
     )
 
+
 async def entrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
     user = update.effective_user
-    pontuacoes = carregar_dados(PONTUACOES_FILE, {})
-
-    if chat_id not in pontuacoes:
-        pontuacoes[chat_id] = {"usuarios": {}, "nome_grupo": update.effective_chat.title}
-
-    if str(user.id) not in pontuacoes[chat_id]["usuarios"]:
-        pontuacoes[chat_id]["usuarios"][str(user.id)] = {"nome": user.first_name, "pontos": 0}
-        salvar_dados(PONTUACOES_FILE, pontuacoes)
-        await update.message.reply_text(f"✅ {user.first_name}, você entrou no ranking deste grupo!")
+    if str(user.id) not in pontuacoes:
+        pontuacoes[str(user.id)] = {"nome": user.first_name, "pontos": 0, "chat_id": update.effective_chat.id}
+        salvar_arquivo(PONTUACOES_FILE, pontuacoes)
+        await update.message.reply_text(f"🎮 {user.first_name} entrou no ranking!")
     else:
-        await update.message.reply_text("⚠️ Você já está participando!")
+        await update.message.reply_text("⚡ Você já está participando!")
 
-# --- Envio de quizzes automáticos ---
+
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        await update.message.reply_text("Nenhum jogador ainda 😢")
+        return
+
+    ranking_ordenado = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
+    texto = f"🏆 Ranking - {temporada['estacao']}\n\n"
+    for i, (_, dados) in enumerate(ranking_ordenado[:10], start=1):
+        texto += f"{i}. {dados['nome']} - {dados['pontos']} pts\n"
+    await update.message.reply_text(texto)
+
+
+async def pontuacao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    pontos = pontuacoes.get(str(user.id), {}).get("pontos", 0)
+    await update.message.reply_text(f"🎯 {user.first_name}, você tem {pontos} pontos.")
+
+
+async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = (
+        "📚 Comandos disponíveis:\n"
+        "/iniciar - Apresenta o bot\n"
+        "/entrar - Entra no ranking\n"
+        "/ranking - Mostra o ranking\n"
+        "/pontuacao - Mostra seus pontos\n"
+        "/ajuda - Mostra esta mensagem"
+    )
+    await update.message.reply_text(texto)
+
+
+# ==============================
+# QUIZ AUTOMÁTICO
+# ==============================
 async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
-    pontuacoes = carregar_dados(PONTUACOES_FILE, {})
-    quizzes = carregar_dados(QUIZZES_FILE, [])
-
     if not quizzes or not pontuacoes:
         return
 
     quiz = random.choice(quizzes)
     pergunta = quiz["pergunta"]
     opcoes = quiz["opcoes"]
-    correta = quiz["correta"]
+    resposta_correta = quiz["correta"]
 
-    for chat_id in pontuacoes.keys():
-        try:
-            await context.bot.send_poll(
-                chat_id=int(chat_id),
-                question=f"🧩 Quiz:\n\n{pergunta}",
-                options=opcoes,
-                type="quiz",
-                correct_option_id=correta,
-                is_anonymous=False
-            )
-        except Exception as e:
-            print(f"Erro ao enviar quiz para {chat_id}: {e}")
+    for user_id, dados in pontuacoes.items():
+        chat_id = dados.get("chat_id")
+        if not chat_id:
+            continue
 
-# --- Reset de temporada ---
-async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
-    pontuacoes = carregar_dados(PONTUACOES_FILE, {})
-    for chat_id in pontuacoes.keys():
-        try:
-            await context.bot.send_message(chat_id=int(chat_id), text="🌸 Nova temporada iniciada! Pontuações zeradas!")
-        except Exception:
-            pass
-    salvar_dados(PONTUACOES_FILE, {})
+        mensagem = await context.bot.send_poll(
+            chat_id=chat_id,
+            question=f"🧩 Quiz:\n\n{pergunta}",
+            options=opcoes,
+            type=Poll.QUIZ,
+            correct_option_id=resposta_correta,
+            is_anonymous=False,
+        )
 
-# --- Flask ---
-app = Flask(__name__)
+        # Apaga a mensagem após 45 minutos (2700 segundos)
+        context.job_queue.run_once(
+            apagar_mensagem, 2700, data={"chat_id": chat_id, "msg_id": mensagem.message_id}
+        )
 
-@app.route("/")
-def home():
-    return "✅ Quizada rodando (Python 3.13)"
 
-# --- Bot principal ---
-async def iniciar_bot():
-    application = ApplicationBuilder().token(TOKEN).build()
+async def apagar_mensagem(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.delete_message(context.job.data["chat_id"], context.job.data["msg_id"])
+    except Exception:
+        pass
 
+
+# ==============================
+# PONTUAÇÃO AO ACERTAR
+# ==============================
+async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.poll_answer.user
+    if not user:
+        return
+    if str(user.id) not in pontuacoes:
+        return
+    pontuacoes[str(user.id)]["pontos"] += 5
+    salvar_arquivo(PONTUACOES_FILE, pontuacoes)
+
+
+# ==============================
+# RESET DE ESTAÇÕES
+# ==============================
+async def resetar_temporada():
+    mes = datetime.now().month
+    if 3 <= mes < 6:
+        temporada["estacao"] = "🌸 Primavera"
+    elif 6 <= mes < 9:
+        temporada["estacao"] = "☀️ Verão"
+    elif 9 <= mes < 12:
+        temporada["estacao"] = "🍁 Outono"
+    else:
+        temporada["estacao"] = "❄️ Inverno"
+
+    salvar_arquivo(TEMPORADA_FILE, temporada)
+    for user_id in pontuacoes:
+        pontuacoes[user_id]["pontos"] = 0
+    salvar_arquivo(PONTUACOES_FILE, pontuacoes)
+
+
+# ==============================
+# BÔNUS SEMANAL
+# ==============================
+async def bonus_semanal():
+    for user_id in pontuacoes:
+        pontuacoes[user_id]["pontos"] += 10
+    salvar_arquivo(PONTUACOES_FILE, pontuacoes)
+
+
+# ==============================
+# EXECUÇÃO PRINCIPAL
+# ==============================
+async def main():
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # Agendador de tarefas
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(enviar_quiz, "interval", minutes=45, args=[application])
+    scheduler.add_job(resetar_temporada, "cron", month="3,6,9,12", day=1, hour=0)
+    scheduler.add_job(bonus_semanal, "cron", day_of_week="sun", hour=12)
+    scheduler.start()
+
+    # Handlers
     application.add_handler(CommandHandler("iniciar", iniciar))
     application.add_handler(CommandHandler("entrar", entrar))
+    application.add_handler(CommandHandler("ranking", ranking))
+    application.add_handler(CommandHandler("pontuacao", pontuacao))
+    application.add_handler(CommandHandler("ajuda", ajuda))
+    application.add_handler(PollAnswerHandler(resposta_quiz))
 
-    job_queue: JobQueue = application.job_queue
-    job_queue.run_repeating(enviar_quiz, interval=45 * 60, first=10)
+    print("🤖 Quizada (v21.4) rodando com sucesso!")
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-    datas_reset = ["2025-03-01", "2025-06-01", "2025-09-01", "2025-12-01"]
-    for data in datas_reset:
-        dt = datetime.strptime(data, "%Y-%m-%d")
-        job_queue.run_once(resetar_temporada, when=dt)
 
-    print("🤖 Bot ativo e rodando normalmente.")
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    await asyncio.Event().wait()  # mantém rodando
+def iniciar_bot():
+    asyncio.run(main())
 
-async def main():
-    bot_task = asyncio.create_task(iniciar_bot())
 
-    # inicia Flask sem bloquear o loop principal
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
+@app_flask.route("/")
+def home():
+    return "🎮 Quizada está ativo e rodando na nuvem!"
 
-    await bot_task
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    threading.Thread(target=iniciar_bot).start()
+    app_flask.run(host="0.0.0.0", port=10000)
