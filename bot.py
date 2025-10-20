@@ -6,14 +6,14 @@ import datetime
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, JobQueue
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 
 # ==============================
 # CONFIGURAÇÕES GERAIS
 # ==============================
 TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))  # ID do dono
+OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 QUIZ_INTERVALO = 45 * 60  # 45 minutos
 ARQUIVO_PONTOS = "pontuacoes.json"
@@ -42,7 +42,7 @@ quizzes = carregar_dados(ARQUIVO_QUIZZES)
 async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
     agora = datetime.datetime.now(TIMEZONE)
     if not (7 <= agora.hour < 23):
-        return  # Fora do horário de funcionamento
+        return
 
     if not quizzes:
         return
@@ -53,7 +53,7 @@ async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
     opcoes = quiz["opcoes"]
     correta = quiz["correta"]
 
-    # Deleta quiz anterior (limpeza do chat)
+    # Apaga o quiz anterior
     if chat_id in ULTIMO_QUIZ_MSG:
         try:
             await context.bot.delete_message(chat_id, ULTIMO_QUIZ_MSG[chat_id])
@@ -64,7 +64,6 @@ async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(text=op, callback_data=f"quiz|{correta}|{op}")]
         for op in opcoes
     ]
-
     msg = await context.bot.send_message(
         chat_id,
         f"🧠 *Quiz Rápido!*\n\n{pergunta}",
@@ -82,17 +81,14 @@ async def responder_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in pontuacoes:
         pontuacoes[user_id] = {"nome": user.first_name, "pontos": 50, "nivel": 1}
 
-    pontos = pontuacoes[user_id]["pontos"]
-
     if resposta == correta:
         pontuacoes[user_id]["pontos"] += 35
         await query.answer("✅ Correto! +35 pontos!")
     else:
         await query.answer(f"❌ Errado! Resposta certa: {correta}")
 
-    novo_total = pontuacoes[user_id]["pontos"]
-    pontuacoes[user_id]["nivel"] = novo_total // 200 + 1
-
+    pontos = pontuacoes[user_id]["pontos"]
+    pontuacoes[user_id]["nivel"] = pontos // 200 + 1
     salvar_dados(ARQUIVO_PONTOS, pontuacoes)
 
 # ==============================
@@ -159,7 +155,6 @@ async def aplicar_bonus_semanal(context: ContextTypes.DEFAULT_TYPE):
 async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
     if not pontuacoes:
         return
-
     ranking_ordenado = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
     texto = "🍂 *Fim da Temporada!*\n\n🏅 *Top 10 da Estação:*\n"
     for i, (uid, info) in enumerate(ranking_ordenado[:10], 1):
@@ -168,7 +163,6 @@ async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(context.job.chat_id, texto, parse_mode="Markdown")
 
-    # Resetar pontuações
     for p in pontuacoes.values():
         p["pontos"] = 50
         p["nivel"] = 1
@@ -188,9 +182,8 @@ async def main():
     job_queue = app.job_queue
     job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10)
     job_queue.run_daily(aplicar_bonus_diario, time=datetime.time(hour=22, tzinfo=TIMEZONE))
-    job_queue.run_daily(aplicar_bonus_semanal, time=datetime.time(hour=23, tzinfo=TIMEZONE), days=(6,))  # Sábado
+    job_queue.run_daily(aplicar_bonus_semanal, time=datetime.time(hour=23, tzinfo=TIMEZONE), days=(6,))
 
-    # Reset de estação a cada 3 meses (1/jan, 1/abr, 1/jul, 1/out)
     meses_estacoes = [1, 4, 7, 10]
     hoje = datetime.datetime.now(TIMEZONE)
     proxima_estacao = min((m for m in meses_estacoes if m > hoje.month), default=1)
@@ -202,17 +195,7 @@ async def main():
     await app.run_polling()
 
 # ==============================
-# LOOP COMPATÍVEL COM RENDER
+# LOOP SIMPLIFICADO (SEM CONFLITOS)
 # ==============================
 if __name__ == "__main__":
-    import sys
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(main())
-        else:
-            loop.run_until_complete(main())
-    except RuntimeError:
-        asyncio.run(main())
+    asyncio.run(main())
