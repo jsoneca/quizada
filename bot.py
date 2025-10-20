@@ -221,9 +221,11 @@ def home():
     return "✅ Bot está ativo e rodando!"
 
 def iniciar_bot():
-    asyncio.run(main())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(main())
 
 if __name__ == "__main__":
-    t = threading.Thread(target=iniciar_bot)
+    t = threading.Thread(target=iniciar_bot, daemon=True)
     t.start()
     flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
