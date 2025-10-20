@@ -13,9 +13,8 @@ from telegram.ext import (
 
 # ===================== CONFIGURAÇÕES =====================
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # obtido do ambiente do Render
-OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))  # seu ID pessoal
-CHAT_ID_PRINCIPAL = int(os.getenv("CHAT_ID_PRINCIPAL", "-1000000000000"))  # ID do grupo do bot
+TOKEN = os.getenv("BOT_TOKEN")  # obtido do ambiente do Render
+OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))  # seu ID do Telegram
 
 TIMEZONE = timezone("America/Sao_Paulo")
 
@@ -35,11 +34,12 @@ BONUS_SEMANAL = {1: 500, 2: 400, 3: 300, 4: 300}
 
 pontuacoes = defaultdict(int)
 interacoes_diarias = defaultdict(int)
-mensagem_anterior = {}  # guarda ID da última mensagem do quiz enviada
+mensagem_anterior = {}
+chats_ativos = set()  # grupos ou usuários onde o bot foi ativado
 
 
 def carregar_dados():
-    """Carrega pontuações salvas"""
+    """Carrega pontuações"""
     global pontuacoes
     try:
         with open(SCORES_FILE, "r") as f:
@@ -71,8 +71,8 @@ def salvar_quizzes(quizzes):
 
 # ===================== FUNÇÕES DO QUIZ =====================
 
-async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
-    """Envia quiz a cada intervalo"""
+async def enviar_quiz_para_chat(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Envia quiz a um chat específico"""
     now = datetime.datetime.now(TIMEZONE)
     if not (HORARIO_INICIO <= now.hour < HORARIO_FIM):
         return
@@ -82,13 +82,12 @@ async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
         return
 
     quiz = random.choice(quizzes)
-    chat_id = context.job.chat_id
     keyboard = [
         [InlineKeyboardButton(opt, callback_data=f"{quiz['id']}|{i}")]
         for i, opt in enumerate(quiz['opcoes'])
     ]
 
-    # Apagar quiz anterior para manter o chat limpo
+    # Apagar quiz anterior
     if chat_id in mensagem_anterior:
         try:
             await context.bot.delete_message(chat_id, mensagem_anterior[chat_id])
@@ -104,8 +103,14 @@ async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
     mensagem_anterior[chat_id] = msg.message_id
 
 
+async def enviar_quizzes(context: ContextTypes.DEFAULT_TYPE):
+    """Envia quiz para todos os chats ativos"""
+    for chat_id in chats_ativos:
+        await enviar_quiz_para_chat(context, chat_id)
+
+
 async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Processa respostas dos usuários"""
+    """Processa respostas"""
     query = update.callback_query
     await query.answer()
 
@@ -117,13 +122,13 @@ async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Quiz expirado.")
         return
 
-    usuario = query.from_user
+    user = query.from_user
     correto = int(opcao_idx) == quiz["correta"]
 
     if correto:
-        pontuacoes[str(usuario.id)] = pontuacoes.get(str(usuario.id), PONTOS_INICIAL) + PONTOS_ACERTO
-        interacoes_diarias[str(usuario.id)] = interacoes_diarias.get(str(usuario.id), 0) + 1
-        texto = f"✅ *Correto!* +{PONTOS_ACERTO} pontos!\nTotal: {pontuacoes[str(usuario.id)]}"
+        pontuacoes[str(user.id)] += PONTOS_ACERTO
+        interacoes_diarias[str(user.id)] += 1
+        texto = f"✅ *Correto!* +{PONTOS_ACERTO} pontos!\nTotal: {pontuacoes[str(user.id)]}"
     else:
         texto = f"❌ *Errado!* A resposta certa era: {quiz['opcoes'][quiz['correta']]}"
 
@@ -134,70 +139,52 @@ async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== BÔNUS E RESET =====================
 
 async def aplicar_bonus_diario(context: ContextTypes.DEFAULT_TYPE):
-    """Dá bônus diário para o mais ativo"""
+    """Bônus diário para o mais ativo"""
     if not interacoes_diarias:
         return
-
     mais_ativo = max(interacoes_diarias, key=interacoes_diarias.get)
     pontuacoes[mais_ativo] += 200
     salvar_dados()
     interacoes_diarias.clear()
-
-    await context.bot.send_message(
-        chat_id=context.job.chat_id,
-        text=f"🏆 Bônus diário de 200 pontos para o usuário `{mais_ativo}`!",
-        parse_mode="Markdown"
-    )
+    for chat_id in chats_ativos:
+        await context.bot.send_message(chat_id, f"🏆 Bônus diário de 200 pontos para `{mais_ativo}`!", parse_mode="Markdown")
 
 
 async def aplicar_bonus_semanal(context: ContextTypes.DEFAULT_TYPE):
-    """Bônus semanal para top 4"""
+    """Bônus semanal"""
     if not pontuacoes:
         return
-
     ranking = sorted(pontuacoes.items(), key=lambda x: x[1], reverse=True)[:4]
     texto = "🏅 *Top 4 da Semana:*\n"
-
     for pos, (uid, pts) in enumerate(ranking, start=1):
         bonus = BONUS_SEMANAL[pos]
         pontuacoes[uid] += bonus
         texto += f"{pos}º — `{uid}` +{bonus} pontos (Total: {pontuacoes[uid]})\n"
-
     salvar_dados()
-    await context.bot.send_message(context.job.chat_id, texto, parse_mode="Markdown")
-
-
-async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
-    """Reseta pontuação a cada estação"""
-    if not pontuacoes:
-        return
-
-    ranking = sorted(pontuacoes.items(), key=lambda x: x[1], reverse=True)[:10]
-    texto = "🌸 *Fim da Temporada!*\n🏆 *Top 10:* \n\n"
-    for i, (uid, pts) in enumerate(ranking, start=1):
-        if i <= 3:
-            texto += f"🥇" if i == 1 else ("🥈" if i == 2 else "🥉")
-        texto += f" {i}º — `{uid}`: {pts} pontos\n"
-
-    pontuacoes.clear()
-    salvar_dados()
-
-    await context.bot.send_message(context.job.chat_id, texto, parse_mode="Markdown")
+    for chat_id in chats_ativos:
+        await context.bot.send_message(chat_id, texto, parse_mode="Markdown")
 
 
 # ===================== COMANDOS =====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mensagem de boas-vindas"""
-    await update.message.reply_text("👋 Olá! Eu sou o bot de quizzes. Prepare-se para aprender e ganhar pontos!")
+    """Ativa quizzes no chat"""
+    chat_id = update.effective_chat.id
+    chats_ativos.add(chat_id)
+    await update.message.reply_text("👋 Bot de quiz ativado neste chat! Vou enviar quizzes automaticamente.")
+
+
+async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Envia quiz manualmente"""
+    chat_id = update.effective_chat.id
+    await enviar_quiz_para_chat(context, chat_id)
 
 
 async def add_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Adiciona novos quizzes (somente admin)"""
+    """Adiciona quizzes (somente OWNER)"""
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("🚫 Você não tem permissão para adicionar quizzes.")
+        await update.message.reply_text("🚫 Você não tem permissão para isso.")
         return
-
     try:
         pergunta = context.args[0]
         opcoes = context.args[1:5]
@@ -222,26 +209,25 @@ async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("quiz", quiz))
     app.add_handler(CommandHandler("addquiz", add_quiz))
     app.add_handler(CallbackQueryHandler(resposta_quiz))
 
-    # Agendamentos
-    app.job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO_MINUTOS * 60, first=10, chat_id=CHAT_ID_PRINCIPAL)
-    app.job_queue.run_daily(aplicar_bonus_diario, time=datetime.time(22, 0, tzinfo=TIMEZONE), chat_id=CHAT_ID_PRINCIPAL)
-    app.job_queue.run_repeating(aplicar_bonus_semanal, interval=7 * 24 * 3600, first=30, chat_id=CHAT_ID_PRINCIPAL)
-    app.job_queue.run_repeating(resetar_temporada, interval=90 * 24 * 3600, first=60, chat_id=CHAT_ID_PRINCIPAL)
+    # Tarefas agendadas
+    app.job_queue.run_repeating(enviar_quizzes, interval=QUIZ_INTERVALO_MINUTOS * 60, first=10)
+    app.job_queue.run_daily(aplicar_bonus_diario, time=datetime.time(22, 0, tzinfo=TIMEZONE))
+    app.job_queue.run_repeating(aplicar_bonus_semanal, interval=7 * 24 * 3600, first=30)
 
-    print("🤖 Bot rodando com quiz, bônus, boas-vindas e /addquiz protegido.")
+    print("🤖 Bot rodando com quiz automático, bônus e /addquiz protegido.")
     await app.run_polling()
 
 
-# ===================== EXECUÇÃO SEGURA PARA RENDER =====================
+# ===================== EXECUÇÃO SEGURA =====================
 
 if __name__ == "__main__":
     import sys
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
