@@ -4,5 +4,6 @@ Deploy com Render.
 │
 ├─ main.py                # Código principal do bot
 ├─ quizzes.json           # Arquivo com todos os quizzes
-├─ usuarios.json          # Armazenamento de usuários e pontos
+├── Procfile
 ├─ requirements.txt       # Dependências do Python
+└── .gitignore
