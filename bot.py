@@ -101,7 +101,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chats_ativos.append(chat_id)
         salvar_dados(CHATS_FILE, chats_ativos)
     await update.message.reply_text(
-        "🤖 Olá! Você está participando do QuizBot!\nA cada 45 minutos tem um novo quiz entre 07h e 23h."
+        "🤖 Olá! Você está participando do *QuizBot!* 🎯\n"
+        "A cada 45 minutos tem um novo quiz!\n"
+        "Use /ranking para ver o placar atual.",
+        parse_mode="Markdown"
     )
 
 async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,7 +168,7 @@ async def main():
     app.job_queue.run_daily(aplicar_bonus_diario, time=time(hour=22, tzinfo=TIMEZONE))
     app.job_queue.run_daily(aplicar_bonus_semanal, time=time(hour=23, tzinfo=TIMEZONE), days=(6,))
     
-    # Reset a cada estação (1º de março, junho, setembro e dezembro)
+    # Reset a cada estação (1º de março, junho, setembro, dezembro)
     meses_reset = [3, 6, 9, 12]
     for mes in meses_reset:
         app.job_queue.run_monthly(
