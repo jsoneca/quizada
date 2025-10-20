@@ -157,15 +157,17 @@ async def main():
 
     # Jobs automáticos
     app.job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10)
-    app.job_queue.run_daily(aplicar_bonus_diario, time=datetime.time(hour=22, tzinfo=TIMEZONE))
-    app.job_queue.run_daily(aplicar_bonus_semanal, time=datetime.time(hour=23, tzinfo=TIMEZONE), days=(6,))
+
+    # ⚡ Correção: usar "time" importado do datetime, não "datetime.time"
+    app.job_queue.run_daily(aplicar_bonus_diario, time=time(hour=22, tzinfo=TIMEZONE))
+    app.job_queue.run_daily(aplicar_bonus_semanal, time=time(hour=23, tzinfo=TIMEZONE), days=(6,))
     
     # Reset a cada estação (1º dia de março, junho, setembro, dezembro)
     meses_reset = [3, 6, 9, 12]
     for mes in meses_reset:
         app.job_queue.run_monthly(
             resetar_temporada,
-            when=datetime.time(hour=23, tzinfo=TIMEZONE),
+            when=time(hour=23, tzinfo=TIMEZONE),
             day=1,
             month=mes
         )
