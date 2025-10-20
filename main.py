@@ -43,7 +43,6 @@ def hora_valida():
     agora = datetime.now().time()
     return INICIO <= agora <= FIM
 
-# Embaralhar opções mantendo correta
 def embaralhar_opcoes(pergunta):
     opcoes = pergunta["opcoes"].copy()
     correta = pergunta["correta"]
@@ -55,7 +54,6 @@ def embaralhar_opcoes(pergunta):
     pergunta["correta"] = nova_correta
     return pergunta
 
-# Enviar quiz
 async def enviar_quiz(q):
     msg = await bot.send_poll(
         chat_id=CHAT_ID,
@@ -67,7 +65,6 @@ async def enviar_quiz(q):
     )
     return {msg.poll.id: q}
 
-# Receber resposta
 async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resposta = update.poll_answer
     user_id = str(resposta.user.id)
@@ -100,34 +97,29 @@ async def receber_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"{resultado}\n⭐ Pontos: {pontos}\n🏅 Nível: {nivel}"
     )
 
-# Função semanal para bônus
 async def ranking_semanal():
     while True:
         agora = datetime.now()
-        # verifica se é segunda-feira 00:00
         if agora.weekday() == 0 and agora.hour == 0 and agora.minute < 1:
             usuarios = carregar_usuarios()
-            ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana",0), reverse=True)
-            bonus = [730, 500, 250]  # top 3
+            ranking = sorted(usuarios.items(), key=lambda x: x[1].get("pontos_semana", 0), reverse=True)
+            bonus = [730, 500, 250]
 
             mensagem = "🏆 Ranking semanal concluído!\n\n"
             for i, (user_id, data) in enumerate(ranking[:3]):
                 data["pontos"] += bonus[i]
                 mensagem += f"{i+1}º {data['nome']}: +{bonus[i]} pontos!\n"
-                data["pontos_semana"] = 0  # reset semanal
-            # resetar pontos_semana dos demais
+                data["pontos_semana"] = 0
             for user_id, data in ranking[3:]:
                 data["pontos_semana"] = 0
 
             salvar_usuarios(usuarios)
             await bot.send_message(chat_id=CHAT_ID, text=mensagem)
             print("🏆 Bônus semanal aplicado!")
-            # dormir 61 segundos para não executar novamente no mesmo minuto
             await asyncio.sleep(61)
         else:
             await asyncio.sleep(30)
 
-# Loop automático com shuffle diário
 async def loop_quizzes(app):
     quizzes = carregar_quizzes()
     ultimo_dia = None
@@ -137,7 +129,6 @@ async def loop_quizzes(app):
         agora = datetime.now()
         dia_atual = agora.date()
 
-        # Shuffle diário
         if dia_atual != ultimo_dia:
             perguntas_ordenadas = quizzes.copy()
             random.shuffle(perguntas_ordenadas)
@@ -163,14 +154,17 @@ async def loop_quizzes(app):
             print(f"🛌 Fora do horário. Dormindo {int(segundos_ate_inicio/60)} minutos")
             await asyncio.sleep(segundos_ate_inicio)
 
-# Inicialização
-async def main():
+async def iniciar_bot():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(PollAnswerHandler(receber_resposta))
     asyncio.create_task(loop_quizzes(app))
     asyncio.create_task(ranking_semanal())
     print("🤖 Bot rodando automaticamente com shuffle diário e ranking semanal!")
-    await app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()  # mantém o bot ativo sem encerrar o loop
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.get_event_loop().create_task(iniciar_bot())
+    asyncio.get_event_loop().run_forever()
