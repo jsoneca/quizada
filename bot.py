@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import random
-import threading
 from datetime import datetime
 from flask import Flask
 from telegram import Update
@@ -85,38 +84,42 @@ async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
             pass
     salvar_dados(PONTUACOES_FILE, {})
 
-# --- Setup principal ---
-async def main():
+# --- Flask ---
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "✅ Quizada rodando (Python 3.13)"
+
+# --- Bot principal ---
+async def iniciar_bot():
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("iniciar", iniciar))
     application.add_handler(CommandHandler("entrar", entrar))
 
     job_queue: JobQueue = application.job_queue
+    job_queue.run_repeating(enviar_quiz, interval=45 * 60, first=10)
 
-    # Envia quizzes a cada 45 minutos
-    job_queue.run_repeating(enviar_quiz, interval=45*60, first=10)
-
-    # Reseta a cada 3 meses
     datas_reset = ["2025-03-01", "2025-06-01", "2025-09-01", "2025-12-01"]
     for data in datas_reset:
         dt = datetime.strptime(data, "%Y-%m-%d")
         job_queue.run_once(resetar_temporada, when=dt)
 
-    print("🤖 Bot rodando com sucesso (Python 3.13 + PTB 21.4)")
-    await application.run_polling()
+    print("🤖 Bot ativo e rodando normalmente.")
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    await asyncio.Event().wait()  # mantém rodando
 
-# --- Flask (para manter serviço vivo no Render) ---
-app = Flask(__name__)
+async def main():
+    bot_task = asyncio.create_task(iniciar_bot())
 
-@app.route("/")
-def home():
-    return "✅ Quizada rodando no Render (Python 3.13)"
+    # inicia Flask sem bloquear o loop principal
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
 
-def iniciar_bot():
-    asyncio.run(main())
+    await bot_task
 
 if __name__ == "__main__":
-    t = threading.Thread(target=iniciar_bot)
-    t.start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    asyncio.run(main())
