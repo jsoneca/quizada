@@ -1,229 +1,209 @@
 import os
-import asyncio
 import json
 import random
+import asyncio
 import datetime
-from collections import defaultdict
-from pytz import timezone
+import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, JobQueue
 )
 
-# ===================== CONFIGURAÇÕES =====================
+# ==============================
+# CONFIGURAÇÕES GERAIS
+# ==============================
+TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))  # ID do dono
+TIMEZONE = pytz.timezone("America/Sao_Paulo")
+QUIZ_INTERVALO = 45 * 60  # 45 minutos
+ARQUIVO_PONTOS = "pontuacoes.json"
+ARQUIVO_QUIZZES = "quizzes.json"
+ULTIMO_QUIZ_MSG = {}
 
-TOKEN = os.getenv("BOT_TOKEN")  # obtido do ambiente do Render
-OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))  # seu ID do Telegram
+# ==============================
+# FUNÇÕES DE ARQUIVOS
+# ==============================
+def carregar_dados(arquivo):
+    if not os.path.exists(arquivo):
+        return {}
+    with open(arquivo, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-TIMEZONE = timezone("America/Sao_Paulo")
+def salvar_dados(arquivo, dados):
+    with open(arquivo, "w", encoding="utf-8") as f:
+        json.dump(dados, f, ensure_ascii=False, indent=4)
 
-QUIZ_FILE = "quizzes.json"
-SCORES_FILE = "pontuacoes.json"
+pontuacoes = carregar_dados(ARQUIVO_PONTOS)
+quizzes = carregar_dados(ARQUIVO_QUIZZES)
 
-QUIZ_INTERVALO_MINUTOS = 45
-HORARIO_INICIO = 7
-HORARIO_FIM = 23
+# ==============================
+# FUNÇÕES DE QUIZ
+# ==============================
+async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
+    agora = datetime.datetime.now(TIMEZONE)
+    if not (7 <= agora.hour < 23):
+        return  # Fora do horário de funcionamento
 
-PONTOS_ACERTO = 35
-PONTOS_INICIAL = 50
-
-BONUS_SEMANAL = {1: 500, 2: 400, 3: 300, 4: 300}
-
-# ===================== ARMAZENAMENTO =====================
-
-pontuacoes = defaultdict(int)
-interacoes_diarias = defaultdict(int)
-mensagem_anterior = {}
-chats_ativos = set()  # grupos ou usuários onde o bot foi ativado
-
-
-def carregar_dados():
-    """Carrega pontuações"""
-    global pontuacoes
-    try:
-        with open(SCORES_FILE, "r") as f:
-            pontuacoes.update(json.load(f))
-    except FileNotFoundError:
-        pass
-
-
-def salvar_dados():
-    """Salva pontuações"""
-    with open(SCORES_FILE, "w") as f:
-        json.dump(pontuacoes, f)
-
-
-def carregar_quizzes():
-    """Carrega lista de quizzes"""
-    try:
-        with open(QUIZ_FILE, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
-
-
-def salvar_quizzes(quizzes):
-    """Salva novos quizzes"""
-    with open(QUIZ_FILE, "w") as f:
-        json.dump(quizzes, f)
-
-
-# ===================== FUNÇÕES DO QUIZ =====================
-
-async def enviar_quiz_para_chat(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    """Envia quiz a um chat específico"""
-    now = datetime.datetime.now(TIMEZONE)
-    if not (HORARIO_INICIO <= now.hour < HORARIO_FIM):
-        return
-
-    quizzes = carregar_quizzes()
     if not quizzes:
         return
 
-    quiz = random.choice(quizzes)
-    keyboard = [
-        [InlineKeyboardButton(opt, callback_data=f"{quiz['id']}|{i}")]
-        for i, opt in enumerate(quiz['opcoes'])
-    ]
+    chat_id = context.job.chat_id
+    quiz = random.choice(list(quizzes.values()))
+    pergunta = quiz["pergunta"]
+    opcoes = quiz["opcoes"]
+    correta = quiz["correta"]
 
-    # Apagar quiz anterior
-    if chat_id in mensagem_anterior:
+    # Deleta quiz anterior (limpeza do chat)
+    if chat_id in ULTIMO_QUIZ_MSG:
         try:
-            await context.bot.delete_message(chat_id, mensagem_anterior[chat_id])
+            await context.bot.delete_message(chat_id, ULTIMO_QUIZ_MSG[chat_id])
         except Exception:
             pass
 
+    botoes = [
+        [InlineKeyboardButton(text=op, callback_data=f"quiz|{correta}|{op}")]
+        for op in opcoes
+    ]
+
     msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"🧠 *{quiz['pergunta']}*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        chat_id,
+        f"🧠 *Quiz Rápido!*\n\n{pergunta}",
+        reply_markup=InlineKeyboardMarkup(botoes),
         parse_mode="Markdown"
     )
-    mensagem_anterior[chat_id] = msg.message_id
+    ULTIMO_QUIZ_MSG[chat_id] = msg.message_id
 
-
-async def enviar_quizzes(context: ContextTypes.DEFAULT_TYPE):
-    """Envia quiz para todos os chats ativos"""
-    for chat_id in chats_ativos:
-        await enviar_quiz_para_chat(context, chat_id)
-
-
-async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Processa respostas"""
+async def responder_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
-    quiz_id, opcao_idx = query.data.split("|")
-    quizzes = carregar_quizzes()
-    quiz = next((q for q in quizzes if q["id"] == quiz_id), None)
-
-    if not quiz:
-        await query.edit_message_text("❌ Quiz expirado.")
-        return
-
+    _, correta, resposta = query.data.split("|")
     user = query.from_user
-    correto = int(opcao_idx) == quiz["correta"]
+    user_id = str(user.id)
 
-    if correto:
-        pontuacoes[str(user.id)] += PONTOS_ACERTO
-        interacoes_diarias[str(user.id)] += 1
-        texto = f"✅ *Correto!* +{PONTOS_ACERTO} pontos!\nTotal: {pontuacoes[str(user.id)]}"
+    if user_id not in pontuacoes:
+        pontuacoes[user_id] = {"nome": user.first_name, "pontos": 50, "nivel": 1}
+
+    pontos = pontuacoes[user_id]["pontos"]
+
+    if resposta == correta:
+        pontuacoes[user_id]["pontos"] += 35
+        await query.answer("✅ Correto! +35 pontos!")
     else:
-        texto = f"❌ *Errado!* A resposta certa era: {quiz['opcoes'][quiz['correta']]}"
+        await query.answer(f"❌ Errado! Resposta certa: {correta}")
 
-    salvar_dados()
-    await query.edit_message_text(texto, parse_mode="Markdown")
+    novo_total = pontuacoes[user_id]["pontos"]
+    pontuacoes[user_id]["nivel"] = novo_total // 200 + 1
 
+    salvar_dados(ARQUIVO_PONTOS, pontuacoes)
 
-# ===================== BÔNUS E RESET =====================
-
-async def aplicar_bonus_diario(context: ContextTypes.DEFAULT_TYPE):
-    """Bônus diário para o mais ativo"""
-    if not interacoes_diarias:
-        return
-    mais_ativo = max(interacoes_diarias, key=interacoes_diarias.get)
-    pontuacoes[mais_ativo] += 200
-    salvar_dados()
-    interacoes_diarias.clear()
-    for chat_id in chats_ativos:
-        await context.bot.send_message(chat_id, f"🏆 Bônus diário de 200 pontos para `{mais_ativo}`!", parse_mode="Markdown")
-
-
-async def aplicar_bonus_semanal(context: ContextTypes.DEFAULT_TYPE):
-    """Bônus semanal"""
-    if not pontuacoes:
-        return
-    ranking = sorted(pontuacoes.items(), key=lambda x: x[1], reverse=True)[:4]
-    texto = "🏅 *Top 4 da Semana:*\n"
-    for pos, (uid, pts) in enumerate(ranking, start=1):
-        bonus = BONUS_SEMANAL[pos]
-        pontuacoes[uid] += bonus
-        texto += f"{pos}º — `{uid}` +{bonus} pontos (Total: {pontuacoes[uid]})\n"
-    salvar_dados()
-    for chat_id in chats_ativos:
-        await context.bot.send_message(chat_id, texto, parse_mode="Markdown")
-
-
-# ===================== COMANDOS =====================
-
+# ==============================
+# COMANDOS
+# ==============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ativa quizzes no chat"""
-    chat_id = update.effective_chat.id
-    chats_ativos.add(chat_id)
-    await update.message.reply_text("👋 Bot de quiz ativado neste chat! Vou enviar quizzes automaticamente.")
+    await update.message.reply_text(
+        "👋 Olá! Eu sou o Bot de Quiz!\n\n"
+        "🧩 Enviarei quizzes automáticos a cada 45 minutos (entre 7h e 23h).\n"
+        "🏆 Ganhe pontos, suba de nível e veja seu nome no ranking semanal e das estações!"
+    )
 
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ranking_ordenado = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
+    texto = "🏅 *Top 10 Jogadores:*\n\n"
+    for i, (uid, info) in enumerate(ranking_ordenado[:10], 1):
+        estrela = "⭐" if i <= 3 else ""
+        texto += f"{i}. {info['nome']} — {info['pontos']} pts {estrela}\n"
+    await update.message.reply_text(texto, parse_mode="Markdown")
 
-async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Envia quiz manualmente"""
-    chat_id = update.effective_chat.id
-    await enviar_quiz_para_chat(context, chat_id)
-
-
-async def add_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Adiciona quizzes (somente OWNER)"""
+async def addquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("🚫 Você não tem permissão para isso.")
+        await update.message.reply_text("🚫 Você não tem permissão para adicionar quizzes.")
         return
+
     try:
-        pergunta = context.args[0]
-        opcoes = context.args[1:5]
-        correta = int(context.args[5])
-        quizzes = carregar_quizzes()
-        quizzes.append({
-            "id": str(len(quizzes) + 1),
-            "pergunta": pergunta,
-            "opcoes": opcoes,
-            "correta": correta
-        })
-        salvar_quizzes(quizzes)
+        partes = " ".join(context.args).split("|")
+        pergunta = partes[0].strip()
+        opcoes = [p.strip() for p in partes[1:5]]
+        correta = partes[5].strip()
+        quizzes[pergunta] = {"pergunta": pergunta, "opcoes": opcoes, "correta": correta}
+        salvar_dados(ARQUIVO_QUIZZES, quizzes)
         await update.message.reply_text("✅ Quiz adicionado com sucesso!")
     except Exception:
-        await update.message.reply_text("❗ Uso: /addquiz <pergunta> <op1> <op2> <op3> <op4> <num_correta>")
+        await update.message.reply_text("❌ Formato inválido. Use:\n/addquiz Pergunta | Op1 | Op2 | Op3 | Op4 | Correta")
 
+# ==============================
+# BONIFICAÇÕES
+# ==============================
+async def aplicar_bonus_diario(context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        return
+    mais_ativo = max(pontuacoes.items(), key=lambda x: x[1]["pontos"])
+    pontuacoes[mais_ativo[0]]["pontos"] += 200
+    salvar_dados(ARQUIVO_PONTOS, pontuacoes)
+    await context.bot.send_message(
+        context.job.chat_id,
+        f"🎁 Bônus diário para {mais_ativo[1]['nome']}! +200 pontos!"
+    )
 
-# ===================== INICIALIZAÇÃO =====================
+async def aplicar_bonus_semanal(context: ContextTypes.DEFAULT_TYPE):
+    ranking_ordenado = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
+    bonus = [500, 400, 300, 300]
+    texto = "🏆 *Bônus Semanal!*\n\n"
+    for i, (uid, info) in enumerate(ranking_ordenado[:4]):
+        pontuacoes[uid]["pontos"] += bonus[i]
+        texto += f"{i+1}. {info['nome']} +{bonus[i]} pts\n"
+    salvar_dados(ARQUIVO_PONTOS, pontuacoes)
+    await context.bot.send_message(context.job.chat_id, texto, parse_mode="Markdown")
 
+# ==============================
+# ESTAÇÕES / TEMPORADAS
+# ==============================
+async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        return
+
+    ranking_ordenado = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
+    texto = "🍂 *Fim da Temporada!*\n\n🏅 *Top 10 da Estação:*\n"
+    for i, (uid, info) in enumerate(ranking_ordenado[:10], 1):
+        estrela = "🌟" if i <= 3 else ""
+        texto += f"{i}. {info['nome']} — {info['pontos']} pts {estrela}\n"
+
+    await context.bot.send_message(context.job.chat_id, texto, parse_mode="Markdown")
+
+    # Resetar pontuações
+    for p in pontuacoes.values():
+        p["pontos"] = 50
+        p["nivel"] = 1
+    salvar_dados(ARQUIVO_PONTOS, pontuacoes)
+
+# ==============================
+# MAIN
+# ==============================
 async def main():
-    carregar_dados()
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("quiz", quiz))
-    app.add_handler(CommandHandler("addquiz", add_quiz))
-    app.add_handler(CallbackQueryHandler(resposta_quiz))
+    app.add_handler(CommandHandler("ranking", ranking))
+    app.add_handler(CommandHandler("addquiz", addquiz))
+    app.add_handler(CallbackQueryHandler(responder_quiz, pattern="^quiz"))
 
-    # Tarefas agendadas
-    app.job_queue.run_repeating(enviar_quizzes, interval=QUIZ_INTERVALO_MINUTOS * 60, first=10)
-    app.job_queue.run_daily(aplicar_bonus_diario, time=datetime.time(22, 0, tzinfo=TIMEZONE))
-    app.job_queue.run_repeating(aplicar_bonus_semanal, interval=7 * 24 * 3600, first=30)
+    job_queue = app.job_queue
+    job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10)
+    job_queue.run_daily(aplicar_bonus_diario, time=datetime.time(hour=22, tzinfo=TIMEZONE))
+    job_queue.run_daily(aplicar_bonus_semanal, time=datetime.time(hour=23, tzinfo=TIMEZONE), days=(6,))  # Sábado
 
-    print("🤖 Bot rodando com quiz automático, bônus e /addquiz protegido.")
+    # Reset de estação a cada 3 meses (1/jan, 1/abr, 1/jul, 1/out)
+    meses_estacoes = [1, 4, 7, 10]
+    hoje = datetime.datetime.now(TIMEZONE)
+    proxima_estacao = min((m for m in meses_estacoes if m > hoje.month), default=1)
+    ano = hoje.year if proxima_estacao > hoje.month else hoje.year + 1
+    data_reset = datetime.datetime(ano, proxima_estacao, 1, 0, 0, tzinfo=TIMEZONE)
+    job_queue.run_once(resetar_temporada, when=(data_reset - hoje))
+
+    print("🤖 Bot rodando com quiz, bônus, estações e limpeza automática.")
     await app.run_polling()
 
-
-# ===================== EXECUÇÃO SEGURA =====================
-
+# ==============================
+# LOOP COMPATÍVEL COM RENDER
+# ==============================
 if __name__ == "__main__":
     import sys
     if sys.platform == "win32":
