@@ -14,7 +14,7 @@ import logging
 # ===============================
 # 🔧 CONFIGURAÇÕES GERAIS
 # ===============================
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))  # 🔒 substitua pelo seu ID real
 WEBHOOK_URL = f"https://quizada.onrender.com/webhook/{TOKEN}"
 
