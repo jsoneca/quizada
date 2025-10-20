@@ -1,201 +1,180 @@
-import os
-import json
-import random
 import asyncio
-import datetime
-import pytz
-from telegram import Update
+import json
+import os
+import random
+from datetime import datetime
+from threading import Thread
+from flask import Flask
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackContext,
-    filters,
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    ContextTypes
 )
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.date import DateTrigger
 
-# 🌎 Fuso horário
-TIMEZONE = pytz.timezone("America/Sao_Paulo")
-
-# ⚙️ Configurações principais
+# =========================================================
+# 🔐 TOKEN DO BOT
+# (usando variável de ambiente do Render)
 TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-QUIZ_INTERVALO = 45 * 60  # 45 minutos
-PONTOS_POR_ACERTO = 35
-ARQUIVO_PONTOS = "pontuacoes.json"
-ARQUIVO_QUIZZES = "quizzes.json"
+# =========================================================
+# 📁 ARQUIVOS DE DADOS
+QUIZ_FILE = "quizzes.json"
+PONTOS_FILE = "pontuacoes.json"
 
-ultima_mensagem_id = None
-
-
-# ===============================
-# 🔹 FUNÇÕES DE SUPORTE
-# ===============================
-
-def carregar_pontuacoes():
-    if not os.path.exists(ARQUIVO_PONTOS):
-        return {}
-    with open(ARQUIVO_PONTOS, "r") as f:
+# =========================================================
+# 🔄 FUNÇÕES AUXILIARES
+def carregar_json(caminho, padrao):
+    if not os.path.exists(caminho):
+        salvar_json(caminho, padrao)
+    with open(caminho, "r", encoding="utf-8") as f:
         return json.load(f)
 
+def salvar_json(caminho, dados):
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(dados, f, indent=4, ensure_ascii=False)
 
-def salvar_pontuacoes(pontuacoes):
-    with open(ARQUIVO_PONTOS, "w") as f:
-        json.dump(pontuacoes, f, indent=4)
+# =========================================================
+# ⚙️ CARREGAMENTO INICIAL
+quizzes = carregar_json(QUIZ_FILE, [])
+pontuacoes = carregar_json(PONTOS_FILE, {})
 
+mensagens_quiz = {}
 
-def carregar_quizzes():
-    if not os.path.exists(ARQUIVO_QUIZZES):
-        with open(ARQUIVO_QUIZZES, "w") as f:
-            json.dump([], f)
-        return []
-    with open(ARQUIVO_QUIZZES, "r") as f:
-        return json.load(f)
+# =========================================================
+# 🧠 FUNÇÕES DO QUIZ
+async def enviar_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Envia um quiz aleatório e remove o anterior."""
+    chat_id = update.effective_chat.id
 
+    # Apaga quiz anterior
+    if chat_id in mensagens_quiz:
+        try:
+            await context.bot.delete_message(chat_id, mensagens_quiz[chat_id])
+        except:
+            pass
 
-def salvar_quizzes(quizzes):
-    with open(ARQUIVO_QUIZZES, "w") as f:
-        json.dump(quizzes, f, indent=4)
+    if not quizzes:
+        await update.message.reply_text("❌ Nenhum quiz disponível.")
+        return
 
+    quiz = random.choice(quizzes)
+    pergunta = quiz["pergunta"]
+    opcoes = quiz["opcoes"]
+    correta = quiz["correta"]
 
-def escolher_quiz():
-    quizzes = carregar_quizzes()
-    return random.choice(quizzes) if quizzes else None
+    botoes = [
+        [InlineKeyboardButton(text=o, callback_data=f"quiz|{correta}|{o}")]
+        for o in opcoes
+    ]
+    markup = InlineKeyboardMarkup(botoes)
 
+    msg = await update.message.reply_text(f"🧩 {pergunta}", reply_markup=markup)
+    mensagens_quiz[chat_id] = msg.message_id
 
-def adicionar_pontos(usuario_id, nome, pontos):
-    pontuacoes = carregar_pontuacoes()
-    if usuario_id not in pontuacoes:
-        pontuacoes[usuario_id] = {"nome": nome, "pontos": 50}
-    pontuacoes[usuario_id]["pontos"] += pontos
-    salvar_pontuacoes(pontuacoes)
+async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Verifica a resposta e atualiza pontuação."""
+    query = update.callback_query
+    await query.answer()
+    _, correta, escolha = query.data.split("|")
 
+    user_id = str(query.from_user.id)
+    nome = query.from_user.first_name
 
-# ===============================
-# 🔹 FUNÇÕES DO BOT
-# ===============================
+    if user_id not in pontuacoes:
+        pontuacoes[user_id] = {"nome": nome, "pontos": 0}
 
-async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text(
-        "👋 Olá! Eu sou o bot de quizzes!\n"
-        "Responda os quizzes, ganhe pontos e suba no ranking.\n\n"
-        "📚 Use /ranking para ver o Top 10.\n"
-        "⚙️ Use /addquiz (apenas admin) para adicionar novas perguntas.\n\n"
-        "🕒 Novos quizzes a cada 45 minutos, entre 07h e 23h."
+    if escolha == correta:
+        pontuacoes[user_id]["pontos"] += 10
+        texto = f"✅ Correto, {nome}! +10 pontos."
+    else:
+        texto = f"❌ Errado, {nome}. A resposta certa era: {correta}"
+
+    salvar_json(PONTOS_FILE, pontuacoes)
+    await query.edit_message_text(texto)
+
+# =========================================================
+# 🏆 COMANDOS DE PONTUAÇÃO
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        await update.message.reply_text("📊 Ninguém pontuou ainda!")
+        return
+
+    ranking = sorted(
+        pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True
     )
+    texto = "🏅 *Ranking Geral*\n\n"
+    for i, (uid, info) in enumerate(ranking[:10], start=1):
+        texto += f"{i}. {info['nome']} — {info['pontos']} pts\n"
+    await update.message.reply_text(texto, parse_mode="Markdown")
 
+async def bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dá bônus diário de 20 pontos."""
+    user_id = str(update.effective_user.id)
+    nome = update.effective_user.first_name
 
-async def add_quiz(update: Update, context: CallbackContext):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("🚫 Você não tem permissão para isso.")
-        return
-    try:
-        texto = " ".join(context.args)
-        pergunta, resposta = texto.split("|")
-        quizzes = carregar_quizzes()
-        quizzes.append({"pergunta": pergunta.strip(), "resposta": resposta.strip()})
-        salvar_quizzes(quizzes)
-        await update.message.reply_text("✅ Quiz adicionado com sucesso!")
-    except Exception:
-        await update.message.reply_text("⚠️ Use o formato: /addquiz pergunta | resposta")
+    if user_id not in pontuacoes:
+        pontuacoes[user_id] = {"nome": nome, "pontos": 0}
 
+    pontuacoes[user_id]["pontos"] += 20
+    salvar_json(PONTOS_FILE, pontuacoes)
+    await update.message.reply_text(f"🎁 {nome}, você ganhou +20 pontos de bônus!")
 
-async def responder(update: Update, context: CallbackContext):
-    resposta = update.message.text.strip().lower()
-    quizzes = carregar_quizzes()
+# =========================================================
+# 🌦 ESTAÇÕES (pontuação reinicia a cada estação)
+def proxima_estacao(data):
+    ano = data.year
+    estacoes = [
+        datetime(ano, 3, 1),
+        datetime(ano, 6, 1),
+        datetime(ano, 9, 1),
+        datetime(ano, 12, 1)
+    ]
+    for e in estacoes:
+        if e > data:
+            return e
+    return datetime(ano + 1, 3, 1)
 
-    for quiz in quizzes:
-        if resposta == quiz["resposta"].lower():
-            adicionar_pontos(update.effective_user.id, update.effective_user.first_name, PONTOS_POR_ACERTO)
-            await update.message.reply_text(f"✅ Acertou, {update.effective_user.first_name}! +{PONTOS_POR_ACERTO} pontos!")
-            return
+def resetar_temporada():
+    global pontuacoes
+    pontuacoes = {}
+    salvar_json(PONTOS_FILE, pontuacoes)
+    print("🔄 Pontuações resetadas para nova temporada!")
 
-    await update.message.reply_text("❌ Errou! Tente novamente!")
+# =========================================================
+# 🌐 FLASK WEB SERVICE (para Render)
+web_app = Flask(__name__)
 
+@web_app.route("/")
+def home():
+    return "🤖 Bot do Telegram ativo no Render!"
 
-async def enviar_quiz(context: CallbackContext):
-    global ultima_mensagem_id
-    agora = datetime.datetime.now(TIMEZONE)
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
 
-    if not (7 <= agora.hour < 23):
-        return
-
-    quiz = escolher_quiz()
-    if not quiz:
-        print("❌ Nenhum quiz disponível.")
-        return
-
-    chat_id = context.job.chat_id or context.job.data.get("chat_id")
-
-    try:
-        if ultima_mensagem_id:
-            await context.bot.delete_message(chat_id=chat_id, message_id=ultima_mensagem_id)
-    except Exception:
-        pass
-
-    msg = await context.bot.send_message(chat_id=chat_id, text=f"🧩 Quiz:\n\n{quiz['pergunta']}")
-    ultima_mensagem_id = msg.message_id
-
-
-async def resetar_temporada(context: CallbackContext):
-    pontuacoes = carregar_pontuacoes()
-    if not pontuacoes:
-        return
-
-    top10 = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)[:10]
-    msg = "🏁 *Fim da Temporada!*\n\n🏆 *Top 3 jogadores:*\n"
-
-    for i, (uid, data) in enumerate(top10[:3], start=1):
-        medalha = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-        msg += f"{medalha} {data['nome']} — {data['pontos']} pontos\n"
-
-    msg += "\n🎉 Parabéns a todos! A nova temporada começa agora!"
-    await context.bot.send_message(chat_id=OWNER_ID, text=msg, parse_mode="Markdown")
-
-    salvar_pontuacoes({})
-
-
-async def ranking(update: Update, context: CallbackContext):
-    pontuacoes = carregar_pontuacoes()
-    if not pontuacoes:
-        await update.message.reply_text("📊 Ainda não há pontuações registradas.")
-        return
-
-    top10 = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)[:10]
-    msg = "🏆 *Top 10 Jogadores da Temporada*\n\n"
-    for i, (uid, data) in enumerate(top10, start=1):
-        medalha = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}️⃣"
-        msg += f"{medalha} {data['nome']} — {data['pontos']} pts\n"
-
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-
-# ===============================
-# 🔹 MAIN (compatível com Render)
-# ===============================
-
+# =========================================================
+# 🚀 EXECUÇÃO DO BOT
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addquiz", add_quiz))
+    # Handlers
+    app.add_handler(CommandHandler("quiz", enviar_quiz))
     app.add_handler(CommandHandler("ranking", ranking))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, responder))
+    app.add_handler(CommandHandler("bonus", bonus))
+    app.add_handler(CallbackQueryHandler(resposta_quiz, pattern=r"^quiz\|"))
 
-    job_queue = app.job_queue
-    job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10, data={"chat_id": OWNER_ID})
+    # Scheduler das estações
+    scheduler = AsyncIOScheduler()
+    hoje = datetime.now()
+    prox = proxima_estacao(hoje)
+    scheduler.add_job(resetar_temporada, trigger=DateTrigger(run_date=prox))
+    scheduler.start()
 
-    ano_atual = datetime.datetime.now().year
-    for mes in [3, 6, 9, 12]:
-        data_reset = datetime.datetime(ano_atual, mes, 1, 0, 0, tzinfo=TIMEZONE)
-        job_queue.run_once(resetar_temporada, when=data_reset)
-
-    print("🤖 Bot rodando normalmente com Python 3.13 no Render...")
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()  # mantém o bot rodando sem fechar o loop
-
+    print("🤖 Bot rodando com quiz, bônus, estações e limpeza automática.")
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
+    Thread(target=run_flask).start()
     asyncio.run(main())
