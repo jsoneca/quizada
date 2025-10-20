@@ -1,192 +1,177 @@
-import os
-import random
 import asyncio
-import logging
 import json
-from datetime import datetime, timedelta, time, date
+import random
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, JobQueue
 )
-from collections import defaultdict
+import os
+import pytz
 
-# === Configurações do bot ===
-TOKEN = os.getenv("BOT_TOKEN")
+# === CONFIGURAÇÕES ===
+TOKEN = os.getenv("BOT_TOKEN")  # Definido no Render
+TIMEZONE = pytz.timezone("America/Sao_Paulo")
 QUIZ_INTERVALO = 45 * 60  # 45 minutos
 HORARIO_INICIO = 7
 HORARIO_FIM = 23
-PONTOS_POR_ACERTO = 35
+PONTOS_ACERTO = 35
+BONUS_DIARIO = 200
+BONUS_SEMANAL = {1: 500, 2: 400, 3: 300, 4: 300}
 PONTOS_INICIAIS = 50
 
-# === Logging (mostra logs no Render) ===
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
+# === BASE DE DADOS ===
+PONTOS_FILE = "pontuacoes.json"
+QUIZ_FILE = "quizzes.json"
+CHATS_FILE = "chats_ativos.json"
 
-# === Banco de dados em memória ===
-usuarios = defaultdict(lambda: {"pontos": PONTOS_INICIAIS, "level": 1, "acertos": 0, "erros": 0, "interacoes": 0})
-respostas_pendentes = {}
+# === CARREGAR QUIZZES ===
+try:
+    with open(QUIZ_FILE, "r", encoding="utf-8") as f:
+        quizzes = json.load(f)
+except FileNotFoundError:
+    quizzes = []
+    print("⚠️ Nenhum quiz encontrado. Adicione quizzes.json.")
 
-# === Carregar quizzes do arquivo JSON ===
-def load_quizzes():
-    try:
-        with open("quizzes.json", "r", encoding="utf-8") as f:
-            quizzes = json.load(f)
-            if not isinstance(quizzes, list):
-                raise ValueError("O arquivo quizzes.json deve conter uma lista.")
-            logger.info(f"✅ {len(quizzes)} quizzes carregados com sucesso.")
-            return quizzes
-    except FileNotFoundError:
-        logger.warning("⚠️ quizzes.json não encontrado, usando perguntas padrão.")
-        return [
-            {"q": "Qual a capital da França?", "opts": ["Paris", "Londres", "Roma", "Berlim"], "ans": "Paris"},
-            {"q": "Quem pintou a Mona Lisa?", "opts": ["Van Gogh", "Da Vinci", "Picasso", "Michelangelo"], "ans": "Da Vinci"},
-        ]
+# === FUNÇÕES AUXILIARES ===
+def carregar_dados(arquivo, padrao):
+    if os.path.exists(arquivo):
+        with open(arquivo, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return padrao
 
-QUIZZES = load_quizzes()
+def salvar_dados(arquivo, dados):
+    with open(arquivo, "w", encoding="utf-8") as f:
+        json.dump(dados, f, indent=2, ensure_ascii=False)
 
-# === Funções utilitárias ===
-def get_level(pontos):
-    return 1 + pontos // 200
+pontuacoes = carregar_dados(PONTOS_FILE, {})
+chats_ativos = carregar_dados(CHATS_FILE, [])
 
-def get_top_usuarios(limit=10):
-    return sorted(usuarios.items(), key=lambda x: x[1]["pontos"], reverse=True)[:limit]
-
-def reset_interacoes():
-    for data in usuarios.values():
-        data["interacoes"] = 0
-
-def get_estacao(data: date):
-    mes = data.month
-    if mes in [12, 1, 2]:
-        return "Verão"
-    elif mes in [3, 4, 5]:
-        return "Outono"
-    elif mes in [6, 7, 8]:
-        return "Inverno"
-    else:
-        return "Primavera"
-
-# === Comandos do bot ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎮 Bem-vindo ao *QuizBot*! Use /join para participar.", parse_mode="Markdown")
-
-async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in usuarios:
-        usuarios[user.id] = {"pontos": PONTOS_INICIAIS, "level": 1, "acertos": 0, "erros": 0, "interacoes": 0}
-        await update.message.reply_text(f"✅ {user.first_name}, você entrou no quiz! Boa sorte!")
-    else:
-        await update.message.reply_text("⚡ Você já está participando!")
-
-async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ranking = get_top_usuarios()
-    msg = "🏆 *Ranking Atual:*\n\n"
-    for i, (uid, data) in enumerate(ranking, 1):
-        msg += f"{i}. {context.bot_data.get(uid, 'Jogador')} — {data['pontos']} pts (Lv {data['level']})\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-# === Envio de quiz ===
+# === SISTEMA DE QUIZ ===
 async def enviar_quiz(context: ContextTypes.DEFAULT_TYPE):
-    agora = datetime.now().time()
-    if agora < time(HORARIO_INICIO, 0) or agora > time(HORARIO_FIM, 0):
-        logger.info("⏸️ Fora do horário (07h–23h). Nenhum quiz enviado agora.")
+    agora = datetime.now(TIMEZONE)
+    if not (HORARIO_INICIO <= agora.hour < HORARIO_FIM):
         return
 
-    if not QUIZZES:
-        logger.warning("⚠️ Nenhum quiz disponível.")
+    if not quizzes:
         return
 
-    quiz = random.choice(QUIZZES)
-    keyboard = [[InlineKeyboardButton(opt, callback_data=opt)] for opt in quiz["opts"]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    quiz = random.choice(quizzes)
+    keyboard = [
+        [InlineKeyboardButton(opcao, callback_data=f"{quiz['ans']}|{opcao}")]
+        for opcao in quiz["opts"]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
 
-    chat_id = context.job.data["chat_id"]
-    await context.bot.send_message(chat_id=chat_id, text=f"🧩 {quiz['q']}", reply_markup=reply_markup)
-    respostas_pendentes[chat_id] = quiz
-    logger.info(f"📨 Quiz enviado para {chat_id}: {quiz['q']}")
+    for chat_id in chats_ativos:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🧠 *{quiz['q']}*",
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"❌ Falha ao enviar quiz para {chat_id}: {e}")
 
-# === Respostas ===
 async def resposta_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user = query.from_user
-    chat_id = query.message.chat_id
-    resposta = query.data
-    quiz = respostas_pendentes.get(chat_id)
+    await query.answer()
 
-    if not quiz:
-        await query.answer("⏳ Nenhum quiz ativo no momento.")
-        return
+    resposta_correta, resposta_usuario = query.data.split("|")
+    user_id = str(query.from_user.id)
+    nome = query.from_user.first_name
 
-    usuarios[user.id]["interacoes"] += 1
-
-    if resposta == quiz["ans"]:
-        usuarios[user.id]["pontos"] += PONTOS_POR_ACERTO
-        usuarios[user.id]["acertos"] += 1
-        usuarios[user.id]["level"] = get_level(usuarios[user.id]["pontos"])
-        await query.edit_message_text(f"✅ Correto, {user.first_name}! +{PONTOS_POR_ACERTO} pontos.")
+    if resposta_usuario == resposta_correta:
+        pontos_atuais = pontuacoes.get(user_id, {}).get("pontos", PONTOS_INICIAIS)
+        pontos_atuais += PONTOS_ACERTO
+        pontuacoes[user_id] = {"nome": nome, "pontos": pontos_atuais}
+        salvar_dados(PONTOS_FILE, pontuacoes)
+        await query.edit_message_text(f"✅ Correto, {nome}! Você ganhou {PONTOS_ACERTO} pontos.")
     else:
-        usuarios[user.id]["erros"] += 1
-        await query.edit_message_text(f"❌ Errado, {user.first_name}! Resposta certa: {quiz['ans']}")
+        await query.edit_message_text(f"❌ Errado, {nome}! A resposta certa era *{resposta_correta}*.", parse_mode="Markdown")
 
-    logger.info(f"👤 {user.first_name} respondeu '{resposta}' (correta: {quiz['ans']})")
+# === COMANDOS ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in chats_ativos:
+        chats_ativos.append(chat_id)
+        salvar_dados(CHATS_FILE, chats_ativos)
+    await update.message.reply_text("🤖 Olá! Você está participando do QuizBot! A cada 45 minutos tem um novo quiz.")
 
-# === Bônus diário ===
-async def bonus_diario(context: ContextTypes.DEFAULT_TYPE):
-    if not usuarios:
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        await update.message.reply_text("📊 Nenhum jogador ainda.")
         return
-    mais_ativo = max(usuarios.items(), key=lambda x: x[1]["interacoes"])
-    uid, data = mais_ativo
-    data["pontos"] += 200
-    reset_interacoes()
-    logger.info(f"🌞 Bônus diário de 200 pontos para {uid}")
 
-# === Bônus semanal ===
-async def bonus_semanal(context: ContextTypes.DEFAULT_TYPE):
-    ranking = get_top_usuarios(4)
-    bonus = [500, 400, 300, 300]
-    for (i, (uid, data)) in enumerate(ranking):
-        data["pontos"] += bonus[i]
-        logger.info(f"🏅 Bônus semanal de {bonus[i]} pontos para {uid}")
+    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
+    msg = "🏆 *Ranking Atual:*\n\n"
+    for i, (user_id, dados) in enumerate(ranking[:10], start=1):
+        medalha = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        msg += f"{medalha} {dados['nome']} — {dados['pontos']} pts\n"
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
-# === Reset a cada estação ===
-async def reset_estacao(context: ContextTypes.DEFAULT_TYPE):
-    top10 = get_top_usuarios(10)
-    logger.info("🍂 Reset de estação — top 10:")
-    for i, (uid, data) in enumerate(top10, 1):
-        logger.info(f"{i}. {uid} — {data['pontos']} pts")
+# === BÔNUS E TEMPORADAS ===
+async def aplicar_bonus_diario(context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        return
+    user = max(pontuacoes.items(), key=lambda x: x[1]["pontos"])
+    pontuacoes[user[0]]["pontos"] += BONUS_DIARIO
+    salvar_dados(PONTOS_FILE, pontuacoes)
+    print(f"🌞 Bônus diário de {BONUS_DIARIO} pontos para {user[1]['nome']}.")
 
-    # Reset geral
-    for data in usuarios.values():
-        data["pontos"] = PONTOS_INICIAIS
-        data["level"] = 1
-        data["acertos"] = 0
-        data["erros"] = 0
-        data["interacoes"] = 0
-    logger.info("🔄 Pontuações resetadas para nova estação.")
+async def aplicar_bonus_semanal(context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        return
+    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)[:4]
+    for pos, (uid, dados) in enumerate(ranking, start=1):
+        bonus = BONUS_SEMANAL.get(pos, 0)
+        pontuacoes[uid]["pontos"] += bonus
+        print(f"🏅 {dados['nome']} recebeu bônus semanal de {bonus} pontos.")
+    salvar_dados(PONTOS_FILE, pontuacoes)
 
-# === Inicialização do bot ===
+async def resetar_temporada(context: ContextTypes.DEFAULT_TYPE):
+    if not pontuacoes:
+        return
+    ranking = sorted(pontuacoes.items(), key=lambda x: x[1]["pontos"], reverse=True)
+    print("🍂 Reset de temporada — Top 10:")
+    for i, (uid, dados) in enumerate(ranking[:10], start=1):
+        destaque = "⭐" if i <= 3 else ""
+        print(f"{destaque}{i}. {dados['nome']} — {dados['pontos']} pts")
+    pontuacoes.clear()
+    salvar_dados(PONTOS_FILE, pontuacoes)
+
+# === MAIN ===
 async def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .concurrent_updates(True)
+        .build()
+    )
 
     # Handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("join", join))
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(CallbackQueryHandler(resposta_quiz))
 
-    # JobQueue
-    job_queue = app.job_queue
-    chat_id = int(os.getenv("CHAT_ID", "-100"))  # ID do grupo ou chat
-    job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10, data={"chat_id": chat_id})
-    job_queue.run_daily(bonus_diario, time=time(0, 0))
-    job_queue.run_daily(bonus_semanal, time=time(0, 0), days=(0,))  # Segunda-feira
-    job_queue.run_monthly(reset_estacao, when="1st")  # Início de cada estação
+    # Jobs automáticos
+    app.job_queue.run_repeating(enviar_quiz, interval=QUIZ_INTERVALO, first=10)
+    app.job_queue.run_daily(aplicar_bonus_diario, time=datetime.time(hour=22, tzinfo=TIMEZONE))
+    app.job_queue.run_daily(aplicar_bonus_semanal, time=datetime.time(hour=23, tzinfo=TIMEZONE), days=(6,))
+    
+    # Reset a cada estação (1º dia de março, junho, setembro, dezembro)
+    meses_reset = [3, 6, 9, 12]
+    for mes in meses_reset:
+        app.job_queue.run_monthly(
+            resetar_temporada,
+            when=datetime.time(hour=23, tzinfo=TIMEZONE),
+            day=1,
+            month=mes
+        )
 
-    logger.info("🤖 Bot rodando com sistema de temporadas, bônus e logs detalhados...")
-    await app.run_polling()
+    print("🤖 Bot rodando com sistema de quizzes, bônus e temporadas.")
+    await app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
     asyncio.run(main())
