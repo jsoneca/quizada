@@ -3,10 +3,10 @@ services:
     name: quizada
     env: python
     plan: free
-    runtime: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python bot.py"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
     envVars:
+      - key: BOT_TOKEN
+        sync: false
       - key: PYTHON_VERSION
-        value: 3.11.9
-
+        value: 3.13.0
