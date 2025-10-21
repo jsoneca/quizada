@@ -22,8 +22,8 @@ from telegram.ext import (
 os.environ["TZ"] = "America/Sao_Paulo"
 timezone = pytz.timezone("America/Sao_Paulo")
 
-TOKEN = "8197621920:AAF63zyswckSBILJ9M0WpHPVlNJDe0YRi4M"  # substitua pelo token do BotFather
-OWNER_ID = 8126443922  # seu ID do Telegram (sem vírgula!)
+TOKEN = "bisteconeécorno"  # substitua pelo token do BotFather
+OWNER_ID = eviado  # seu ID do Telegram (sem vírgula!)
 
 QUIZZES_FILE = "quizzes.json"
 USERS_FILE = "usuarios.json"
