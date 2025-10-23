@@ -100,7 +100,7 @@
   {"pergunta":"Quem dirige 'The Batman' de 2022?","opcoes":["Matt Reeves","Christopher Nolan","Zack Snyder","Patty Jenkins"],"correta":0},
   {"pergunta":"Qual filme de 2023 da Pixar envolve adolescentes e mudanças de personalidade?","opcoes":["Turning Red","Elementos","Soul","Luca"],"correta":0},
   {"pergunta":"Qual é o nome do planeta de origem de Superman?","opcoes":["Krypton","Vulcano","Asgard","Gallifrey"],"correta":0},
-  {"pergunta":"Em 'Thor: Amor e Trovão', quem retorna como Thor?","opcoes":["Chris Hemsworth","Chris Evans","Mark Ruffalo","Robert Downey Jr."],"correta":0}
+  {"pergunta":"Em 'Thor: Amor e Trovão', quem retorna como Thor?","opcoes":["Chris Hemsworth","Chris Evans","Mark Ruffalo","Robert Downey Jr."],"correta":0},
   {"pergunta": "Em que país fica a Torre Eiffel?", "opcoes": ["Itália", "Alemanha", "França", "Espanha"], "correta": 2},
   {"pergunta": "Onde está localizado o Coliseu?", "opcoes": ["Atenas", "Roma", "Paris", "Istambul"], "correta": 1},
   {"pergunta": "O Cristo Redentor fica em qual cidade?", "opcoes": ["São Paulo", "Rio de Janeiro", "Lisboa", "Buenos Aires"], "correta": 1},
